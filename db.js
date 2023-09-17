@@ -94,6 +94,51 @@ class DB {
     return 0;
   }
 
+  async getUserSpotted(userId) {
+    let sql =
+      "SELECT b.boat_id, b.mmsi, b.owner_user_id, b.make, b.model, b.model_year, b.spot_count, b.inbox_unread_count, m.id as media_id, m.user_id as media_user_id, m.created_time as media_created_time, m.uri, sum(s.score) as score, u.username " +
+      "FROM " +
+      "  boats b JOIN media m ON m.boat_id = b.boat_id JOIN scores s on s.boat_id = b.boat_id AND m.user_id = $1 JOIN users u ON u.user_id = m.user_id " +
+      "GROUP BY b.boat_id, b.mmsi, b.owner_user_id, b.make, b.model, b.model_year, b.spot_count, b.inbox_unread_count, m.id, m.user_id, m.created_time, m.uri";
+
+    const result = this.client.query(sql, [userId]);
+    if (result.rows && result.rows.length) {
+      const ret = {};
+
+      for (const r of result.rows) {
+        if (!ret[r.boat_id]) {
+          ret[r.boat_id] = {
+            boat_id: r.boat_id,
+            mmsi: r.mmsi,
+            owner_user_id: r.owner_user_id,
+            make: r.make,
+            model: r.model,
+            model_year: r.model_year,
+            spot_count: r.spot_count,
+            inbox_unread_count: r.inbox_unread_count,
+            user: {
+              spotted: true,
+              score: r.score,
+            },
+            media: [],
+          };
+        }
+
+        media.push({
+          id: r.media_id,
+          user_id: r.user_id,
+          username: r.username,
+          created_time: r.media_created_time,
+          uri: r.uri,
+        });
+      }
+
+      return ret;
+    } else {
+      return null;
+    }
+  }
+
   async putBoat(data) {
     const boat = await this.getBoatByMMSI(data.MMSI);
 
@@ -128,7 +173,7 @@ class DB {
 
       /* Add is_spot_media #todo */
       const r3 = await this.client.query(
-        "DELETE FROM media WHERE user_id = $1 AND boat_id = $2", 
+        "DELETE FROM media WHERE user_id = $1 AND boat_id = $2",
         [userId, boatId],
       );
 

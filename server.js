@@ -318,6 +318,25 @@ app.put("/boats/:boatId", async (req, res) => {
   }
 });
 
+app.get("/users/:userId/spotted", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  if (!userId || userId !== parseInt(req.params.userId)) {
+    res.status(401).end();
+    return;
+  }
+
+  const result = await db.getUserSpotted(userId);
+
+  res.append("Content-Type", "application/json");
+
+  if (!result) {
+    res.status(500).end();
+  } else {
+    res.send(result);
+  }
+});
+
 app.post("/boats/:mmsi/media", async (req, res) => {
   const userId = getUserIdFromHeaders(req.headers);
 
