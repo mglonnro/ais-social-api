@@ -2,8 +2,9 @@ import pkg from "pg";
 const { Client } = pkg;
 
 import geolib from "geolib";
-/*
 import admin from "./firebase.js";
+
+/*
 import loadDB from "./firebase_db.js";
 */
 import { SCORE_TYPE_SPOT } from "./constants.js";
@@ -62,6 +63,82 @@ class DB {
     return null;
   }
 
+  async deleteUser(userId) {
+    try {
+      await this.client.query("DELETE FROM scores WHERE user_id = $1", [
+        userId,
+      ]);
+      await this.client.query("DELETE FROM media WHERE user_id = $1", [userId]);
+      await this.client.query("DELETE FROM users WHERE user_id = $1", [userId]);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
+  }
+
+  async deleteClaim(userId, claimId) {
+    const res = await this.client.query(
+      "UPDATE claims SET released_time = NOW() WHERE user_id = $1 AND id = $2 AND released_time IS NULL",
+      [userId, claimId],
+    );
+
+    console.log("deleteClaim", res);
+    return res.rowCount === 1 ? res : null;
+  }
+
+  async insertMessage(userId, m) {
+    console.log("m", m);
+
+    const res = await this.client.query(
+      "INSERT INTO messages (fromuserid, touserid, fromboatid, fromboatname, fromboatmmsi, toboatid, toboatname, toboatmmsi, msgid, message, created_at, sent_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP) RETURNING *",
+      [
+        m.fromuserid,
+        m.touserid,
+        m.fromboatid,
+        m.fromboatname,
+        m.fromboatmmsi,
+        m.toboatid,
+        m.toboatname,
+        m.toboatmmsi,
+        m.msgid,
+        m.message,
+        m.created_at,
+      ],
+    );
+
+    const ret = res.rows[0];
+    /* Let's update unread count */
+    if (m.toboatid) {
+      await this.updateUnreadCount(m.toboatid);
+    }
+    return ret;
+  }
+
+  async updateUnreadCount(boatId) {
+    return await this.client.query(
+      "UPDATE boats SET inbox_unread_count = (SELECT COUNT(msgid) FROM messages WHERE read_at IS NULL AND toboatid = $1) WHERE boat_id = $1",
+      [boatId],
+    );
+  }
+
+  async getUserMessages(userId, after) {
+    const before = new Date();
+
+    if (!after) after = new Date(2000, 1, 1); // forever ago
+
+    const res = await this.client.query(
+      "select messages.*, users.username as fromusername from messages join users on messages.fromuserid = users.user_id WHERE (fromuserid = $1 OR touserid = $1) AND created_at >= $2 AND created_at < $3 ORDER BY created_at DESC LIMIT 100",
+      [userId, after, before],
+    );
+
+    return {
+      after: after,
+      before: before,
+      messages: res.rows,
+    };
+  }
+
   async getUserBoatRelation(userId, boatId) {
     console.log("getuserboatrelation", userId, boatId);
     const spotted = await this.client.query(
@@ -69,8 +146,16 @@ class DB {
       [userId, boatId, SCORE_TYPE_SPOT],
     );
 
-    console.log("spotted", spotted.rows);
+    const claim = await this.client.query(
+      "SELECT * FROM claims WHERE user_id = $1 AND boat_id = $2 AND released_time is null ORDER BY created_time LIMIT 1",
+      [userId, boatId],
+    );
+
     return {
+      claimed:
+        claim && claim.rows.length && claim.rows[0].created_time
+          ? claim.rows[0]
+          : null,
       spotted:
         spotted && spotted.rows.length && spotted.rows[0].created_time
           ? true
@@ -87,29 +172,43 @@ class DB {
       [userId],
     );
     if (score.rows.length) {
-      console.log(score.rows[0]);
-      return score.rows[0].score;
+      return score.rows[0].score !== null ? score.rows[0].score : 0;
     }
 
     return 0;
   }
 
-  async getUserSpotted(userId) {
+  async getUserSpotted(userId, boatId) {
     let sql =
-      "SELECT b.boat_id, b.mmsi, b.owner_user_id, b.make, b.model, b.model_year, b.spot_count, b.inbox_unread_count, m.id as media_id, m.user_id as media_user_id, m.created_time as media_created_time, m.uri, sum(s.score) as score, u.username " +
+      "SELECT b.boat_id, b.mmsi, b.name, b.owner_user_id, b.make, b.model, b.model_year, b.spot_count, b.inbox_unread_count, m.id as media_id, m.user_id as media_user_id, m.created_time as media_created_time, m.uri, sum(s.score) as score, u.username, max(s.created_time) as score_created_time " +
       "FROM " +
-      "  boats b JOIN media m ON m.boat_id = b.boat_id JOIN scores s on s.boat_id = b.boat_id AND m.user_id = $1 JOIN users u ON u.user_id = m.user_id " +
-      "GROUP BY b.boat_id, b.mmsi, b.owner_user_id, b.make, b.model, b.model_year, b.spot_count, b.inbox_unread_count, m.id, m.user_id, m.created_time, m.uri";
+      "  boats b JOIN media m ON m.boat_id = b.boat_id JOIN scores s on s.boat_id = b.boat_id AND m.user_id = $1 JOIN users u ON u.user_id = m.user_id ";
 
-    const result = this.client.query(sql, [userId]);
+    if (boatId) {
+      sql += "WHERE (b.boat_id = $2) ";
+    }
+
+    sql +=
+      "GROUP BY b.boat_id, b.mmsi, b.owner_user_id, b.make, b.model, b.model_year, b.spot_count, b.inbox_unread_count, m.id, m.user_id, m.created_time, m.uri, u.username ORDER BY score_created_time DESC ";
+
+    var result;
+
+    if (boatId) {
+      result = await this.client.query(sql, [userId, boatId]);
+    } else {
+      result = await this.client.query(sql, [userId]);
+    }
+
+    console.log(sql, userId, boatId);
     if (result.rows && result.rows.length) {
       const ret = {};
 
       for (const r of result.rows) {
-        if (!ret[r.boat_id]) {
-          ret[r.boat_id] = {
+        if (!ret[r.mmsi]) {
+          ret[r.mmsi] = {
             boat_id: r.boat_id,
-            mmsi: r.mmsi,
+            MMSI: r.mmsi,
+            ShipName: r.name,
             owner_user_id: r.owner_user_id,
             make: r.make,
             model: r.model,
@@ -121,10 +220,11 @@ class DB {
               score: r.score,
             },
             media: [],
+            score_created_time: r.score_created_time,
           };
         }
 
-        media.push({
+        ret[r.mmsi].media.push({
           id: r.media_id,
           user_id: r.user_id,
           username: r.username,
@@ -133,8 +233,59 @@ class DB {
         });
       }
 
-      return ret;
+      /* retarr */
+      const retarr = [];
+      for (const b in ret) {
+        retarr.push(ret[b]);
+      }
+
+      /* Sort according to score_created_time */
+      retarr.sort((a, b) => {
+        const a_time = a.score_created_time.getTime(),
+          b_time = b.score_created_time.getTime();
+
+        return a_time > b_time ? -1 : a_time < b_time ? 1 : 0;
+      });
+
+      return retarr;
     } else {
+      return null;
+    }
+  }
+
+  async getHallOfFame(userId) {
+    const result = await this.client.query(
+      "select s.user_id, sum(s.score) as score, u.username from scores s join users u on u.user_id = s.user_id group by s.user_id, u.username order by score desc",
+    );
+
+    for (let x = 0; x < result.rows.length; x++) {
+      result.rows[x].rowNo = x + 1;
+    }
+
+    // todo: add logic to take x positions from the top AND include given user
+    return result.rows;
+  }
+
+  async insertClaim(userId, boatId) {
+    return await this.client.query(
+      "INSERT INTO claims (user_id, boat_id, created_time) VALUES ($1, $2, $3) RETURNING *",
+      [userId, boatId, new Date()],
+    );
+  }
+
+  async getClaim(boatId) {
+    const ret = await this.client.query(
+      "SELECT user_id FROM claims WHERE boat_id = $1 AND released_time IS NULL ORDER BY created_time DESC LIMIT 1",
+      [boatId],
+    );
+
+    try {
+      if (ret && ret.rows && ret.rows.length) {
+        return ret.rows[0].user_id;
+      } else {
+        return null;
+      }
+    } catch (e) {
       return null;
     }
   }
@@ -185,7 +336,7 @@ class DB {
         "SELECT SUM(score) as score FROM scores WHERE user_id = $1",
         [userId],
       );
-      return { score: total.rows[0].score };
+      return { score: total.rows[0].score !== null ? total.rows[0].score : 0 };
     }
 
     return null;
@@ -193,10 +344,32 @@ class DB {
 
   async postScore(data) {
     const result = await this.client.query(
-      "INSERT INTO scores (user_id, score, boat_id, type, description, created_time) " +
-        "VALUES ($1, $2, $3, $4, $5, NOW())",
-      [data.userId, data.score, data.boatId, data.type, data.description],
+      "INSERT INTO scores (user_id, score, boat_id, type, description, created_time, user_position, boat_position) " +
+        "VALUES ($1, $2, $3, $4, $5, NOW(), POINT($6, $7), POINT($8, $9))",
+      [
+        data.userId,
+        data.score,
+        data.boatId,
+        data.type,
+        data.description,
+        data.userPosition.longitude,
+        data.userPosition.latitude,
+        data.boatPosition.longitude,
+        data.boatPosition.latitude,
+      ],
     );
+
+    // update boat name
+    if (
+      data.boat &&
+      data.boat.ShipName !== undefined &&
+      data.boat.ShipName.length
+    ) {
+      await this.client.query("UPDATE boats SET name = $1 WHERE boat_id = $2", [
+        data.boat.ShipName,
+        data.boatId,
+      ]);
+    }
 
     // Update boat total
     if (data.boatId) {
@@ -211,7 +384,7 @@ class DB {
       "SELECT SUM(score) as score FROM scores WHERE user_id = $1",
       [data.userId],
     );
-    return { score: total.rows[0].score };
+    return { score: total.rows[0].score, addedScore: data.score };
   }
 
   async postBoatMedia(userId, boatId, uri) {
@@ -255,6 +428,19 @@ class DB {
     }
   }
 
+  async getUserByGoogleId(googleId) {
+    const result = await this.client.query(
+      "SELECT user_id, username, google_id, apple_id FROM users WHERE google_id = $1",
+      [googleId],
+    );
+
+    if (!result.rows.length) {
+      return null;
+    } else {
+      return result.rows[0];
+    }
+  }
+
   async isNickAvailable(nick) {
     const result = await this.client.query(
       "SELECT user_id FROM users WHERE lower(username) = lower($1)",
@@ -269,6 +455,7 @@ class DB {
       "INSERT INTO users (username, email, created_time, apple_id, google_id) VALUES ($1, $2, NOW(), $3, $4) RETURNING *",
       [user.username, user.email, user.appleId, user.googleId],
     );
+
     if (result.rows.length) {
       return result.rows[0];
     } else {

@@ -12,15 +12,24 @@ import path from "path";
 import multer from "multer";
 import GeoJSON from "geojson";
 import { getIdFromToken } from "./auth/appleAuth.mjs";
+import { googleGetIdFromToken } from "./auth/googleAuth.mjs";
 import { createUser, getUniqueNickName } from "./users.js";
 import { hasToken, getUserIdFromHeaders, makeToken } from "./auth/token.mjs";
+import { v4 as uuidv4 } from "uuid";
+import imageType, { minimumBytes } from "image-type";
+import { uploadToStorage } from "./fb.mjs";
+import { getSpotScore } from "./score.js";
+import { claimProcess, STATUS_RUNNING, STATUS_CLAIMED } from "./claim.js";
 
 const port = process.env.PORT;
 const upload = multer({ dest: "useruploads/" });
 
 import http from "http";
 import express from "express";
+
+/*
 import WebSocket from "ws";
+*/
 
 const app = express();
 const server = http.createServer(app);
@@ -33,7 +42,7 @@ const auth = new Auth(db);
 app.use(cors());
 app.use(
   bodyParser.urlencoded({
-    limit: "10mb",
+    limit: "20mb",
     extended: true,
     verify: (req, res, buf, encoding) => {
       console.log("bodyParser.urlencoded:", encoding, buf.toString());
@@ -58,6 +67,7 @@ app.use(
 
 app.use(
   bodyParser.raw({
+    limit: "20mb",
     verify: (req, res, buf, encoding) => {
       console.log("bodyParser.raw:", encoding);
     },
@@ -74,6 +84,10 @@ var state2 = {};
 var state_ts = {}; // state with time stamp tagged data points
 var aisstate = {};
 var sources = {};
+
+// Var to hold claim process data
+var claims = {};
+
 const ais_timeout = 5 * 60; // seconds
 
 state = Object.assign({}, StateFile.readJSON("nmea.state"));
@@ -90,6 +104,7 @@ delete aisstate.state;
 
 var dataservers = {};
 
+/*
 const wss = new WebSocket.Server({ clientTracking: false, noServer: true });
 
 server.on("upgrade", function (request, socket, head) {
@@ -108,6 +123,7 @@ wss.on("connection", function (ws, request) {
   //  ws_client2(ws, { params: { boatId: c[2] } });
   //   ws_server(ws, { params: { boatId: c[2] } });
 });
+*/
 
 setInterval(() => {
   /* Clean out >5 min old entries from state2 */
@@ -228,18 +244,37 @@ app.post("/auth", async (req, res) => {
     let userId;
 
     /* Separate tracks for Apple and Google auth */
-    if (authType === PROVIDER_APPLE) {
-      const appleUserId = getIdFromToken(data.identityToken);
-      console.log("Found valid appleUserId", appleUserId);
-      let dbUser = await db.getUserByAppleId(appleUserId);
+    if (true) {
+      let providerUserId, dbUser;
+
+      if (authType === PROVIDER_APPLE) {
+        providerUserId = getIdFromToken(data.identityToken);
+        console.log("Found valid appleUserId", providerUserId);
+        dbUser = await db.getUserByAppleId(providerUserId);
+      } else if (authType === PROVIDER_GOOGLE) {
+        providerUserId = await googleGetIdFromToken(data.idToken);
+        console.log("Found valid googleUserId", providerUserId);
+        dbUser = await db.getUserByGoogleId(providerUserId);
+      } else {
+        res.status(401).end();
+        return;
+      }
 
       res.append("Content-Type", "application/json");
 
       /* We didn't find any, so let's create a new */
       if (!dbUser) {
-        const newUser = await createUser({ appleId: appleUserId });
+        var newUser;
+
+        if (authType === PROVIDER_APPLE) {
+          newUser = await createUser({ appleId: providerUserId });
+        } else {
+          newUser = await createUser({ googleId: providerUserId });
+        }
+
         console.log("newUser", newUser);
         const token = makeToken({ user_id: newUser.user_id });
+
         res.send(
           Object.assign({}, newUser, {
             token: token,
@@ -258,9 +293,79 @@ app.post("/auth", async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(401).end();
+    return;
   }
 
   res.status(401).end();
+});
+
+app.delete("/users/:userId", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  console.log("deleteuser", userId);
+
+  if (!userId || userId !== parseInt(req.params.userId)) {
+    res.status(401).end();
+    return;
+  }
+
+  console.log("deleting");
+
+  const ok = await db.deleteUser(userId);
+
+  if (ok) {
+    console.log("delete ok");
+    res.append("Content-Type", "application/json");
+    res.send({ deleted: true });
+    res.status(200).end();
+  } else {
+    res.status(500).end();
+  }
+});
+
+app.patch("/image-upload/:mmsi", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  if (!userId) {
+    res.status(401).end();
+    return;
+  }
+
+  console.log("binary-upload", req.body.length);
+
+  const type = await imageType(req.body);
+  console.log("image type", type);
+
+  const _fname = uuidv4();
+  const fname = "./uploads/" + _fname;
+  fs.writeFileSync(fname, req.body);
+
+  // upload to storage
+  const file = await uploadToStorage(req.params.mmsi, fname, _fname, type.mime);
+
+  const boat = await db.getBoatByMMSI(req.params.mmsi);
+  const STORAGE_BASE = "https://storage.googleapis.com/ais-social.appspot.com/";
+
+  if (boat) {
+    const result = await db.postBoatMedia(
+      userId,
+      boat.boat_id,
+      STORAGE_BASE + file[0].metadata.name,
+    );
+    if (result) {
+      res.send(result);
+      res.status(200).end();
+      return;
+    }
+  }
+
+  res.status(500).end();
+});
+
+app.patch("/multipart-upload", upload.single("photo"), (req, res) => {
+  console.log("multipart");
+  console.log(req.body);
+  res.end("OK");
 });
 
 app.get("/nick", async (req, res) => {
@@ -271,10 +376,171 @@ app.get("/nick", async (req, res) => {
   res.status(200).end();
 });
 
+let claimStatus = {},
+  claimCancel = {},
+  claimPosition = {};
+
+app.get("/claims/:boatId/start", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  const boat = await db.getBoatByMMSI(req.params.boatId);
+
+  if (!userId) {
+    // no claim process without user
+    console.error("No claim process without user");
+    res.status(401).end();
+  } else {
+    let uuid = uuidv4();
+    claimStatus[uuid] = null;
+
+    console.log("Starting claim process for", req.params.boatId, userId, uuid);
+
+    claimProcess(parseInt(req.params.boatId), userId, (data) => {
+      console.log("Callback!", data);
+
+      /* If the claim process has been cancelled, then return null to stop it */
+      if (claimCancel[uuid]) {
+        return null;
+      }
+
+      /* If we have received info that the user is too far away */
+      if (claimPosition[uuid] === false) {
+        return null;
+      }
+
+      if (!claimStatus[uuid]) {
+        claimStatus[uuid] = { status: STATUS_RUNNING };
+      }
+
+      claimStatus[uuid] = {
+        ...claimStatus[uuid],
+        [data.doneStage]: data,
+        claimPosition: claimPosition[uuid],
+      };
+      if (data.status === STATUS_CLAIMED) {
+        claimStatus[uuid].status = STATUS_CLAIMED;
+      }
+
+      return claimStatus[uuid];
+    });
+
+    res.send({ processId: uuid });
+    res.status(200).end();
+  }
+});
+
+app.put("/claims/process/:processId/location/:state", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  const processId = req.params.processId;
+  const state = parseInt(req.params.state);
+
+  if (!userId) {
+    res.status(401).end();
+  } else {
+    claimPosition[processId] = state === 1;
+    console.log("claimPosition", processId, claimPosition[processId]);
+  }
+});
+
+app.delete("/claims/:claimId", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  const claimId = req.params.claimId;
+
+  if (!userId) {
+    res.status(401).end();
+  } else {
+    const ret = await db.deleteClaim(userId, claimId);
+    if (ret) {
+      res.send(ret);
+    } else {
+      res.status(401).end();
+    }
+  }
+});
+
+app.delete("/claims/process/:processId", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  const processId = req.params.processId;
+
+  if (!userId) {
+    res.status(401).end();
+    // we should also check for _correct_ userid */
+  } else {
+    claimCancel[processId] = true;
+    claimStatus[processId].status = "canceled";
+    res.status(200).end();
+  }
+});
+
+app.get("/claims/process/:processId/status", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  const processId = req.params.processId;
+
+  if (claimStatus[processId]) {
+    res.send(claimStatus[processId]);
+  } else {
+    res.send({ status: undefined });
+  }
+  res.status(200).end();
+});
+
+/* Messages */
+app.post("/messages", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  const data = req.body; // a message
+
+  console.log("POST message", data);
+
+  if (data.fromuserid !== userId) {
+    res.status(401).end();
+    return;
+  }
+
+  /* Figure out touserid */
+  if (data.toboatid) {
+    data.touserid = await db.getClaim(data.toboatid);
+  }
+
+  try {
+    const ret = await db.insertMessage(userId, data);
+
+    if (!ret) {
+      res.status(500).end();
+    } else {
+      ret.server_id = ret.id;
+      delete ret.id;
+
+      res.send(ret);
+      res.status(200).end();
+    }
+  } catch (e) {
+    console.error(e);
+    res.status(500).end();
+  }
+});
+
+app.get("/users/:userId/messages", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  let after;
+
+  if (req.query.after) {
+    after = new Date(req.query.after);
+  }
+
+  if (userId && userId === parseInt(req.params.userId)) {
+    const msgs = await db.getUserMessages(userId, after);
+    res.send(msgs);
+  } else {
+    res.status(401).end();
+  }
+});
+
 app.get("/boats/:boatId", async (req, res) => {
   // if we have an userid, we'll return user specific extra info with the boat
   const userId = getUserIdFromHeaders(req.headers);
   const boat = await db.getBoatByMMSI(req.params.boatId);
+
+  // set estimated score for new spot
+  boat.spot_score = getSpotScore(boat.spot_count);
 
   if (userId) {
     const userRelation = await db.getUserBoatRelation(userId, boat.boat_id);
@@ -318,8 +584,22 @@ app.put("/boats/:boatId", async (req, res) => {
   }
 });
 
+const getHallOfFame = (userId) => {
+  return db.getHallOfFame(userId);
+};
+
+app.get("/halloffame", async (req, res) => {
+  const ret = await getHallOfFame();
+
+  console.log("ret", ret);
+  res.append("Content-Type", "application/json");
+  res.send(ret);
+});
+
 app.get("/users/:userId/spotted", async (req, res) => {
   const userId = getUserIdFromHeaders(req.headers);
+
+  console.log("spotted", userId, req.params.userId);
 
   if (!userId || userId !== parseInt(req.params.userId)) {
     res.status(401).end();
@@ -401,8 +681,10 @@ app.post("/users/:userId/score", async (req, res) => {
 
   res.append("Content-Type", "application/json");
   const result = await db.postScore(data);
+
   if (result) {
-    res.send(result);
+    const spotted = await db.getUserSpotted(data.userId, data.boatId);
+    res.send(Object.assign({}, result, { spotted: spotted }));
     res.status(200).end();
   } else {
     res.status(500).end();

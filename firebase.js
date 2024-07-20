@@ -1,11 +1,9 @@
 import admin from "firebase-admin";
 
 var config = {
-  apiKey: "AIzaSyDszSCTk4UQvjyBFl1RuHQ68Esr4KXy4kg",
-  authDomain: "naked-sailor.firebaseapp.com",
-  databaseURL: "https://naked-sailor.firebaseio.com",
-  projectId: "naked-sailor",
-  storageBucket: "naked-sailor.appspot.com",
+  apiKey: "AIzaSyD63qIab0G6AB5LEc0YIWAGH7zLYBCRbng",
+  projectId: "ais-social",
+  storageBucket: "ais-social.appspot.com",
   messagingSenderId: "1029131700997",
 };
 

@@ -47,7 +47,9 @@ const createUser = async (base) => {
 
   let nickName = await getUniqueNickName();
 
-  const user = db.createUser(Object.assign({}, base, { username: nickName }));
+  const user = await db.createUser(
+    Object.assign({}, base, { username: nickName }),
+  );
   await db.close();
   return user;
 };
