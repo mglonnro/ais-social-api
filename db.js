@@ -88,11 +88,10 @@ class DB {
   }
 
   async insertMessage(userId, m) {
-    console.log("m", m);
-
     const res = await this.client.query(
-      "INSERT INTO messages (fromuserid, touserid, fromboatid, fromboatname, fromboatmmsi, toboatid, toboatname, toboatmmsi, msgid, message, created_at, sent_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP) RETURNING *",
+      "INSERT INTO messages (userid, fromuserid, touserid, fromboatid, fromboatname, fromboatmmsi, toboatid, toboatname, toboatmmsi, msgid, message, created_at, sent_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP) RETURNING *",
       [
+        userId,
         m.fromuserid,
         m.touserid,
         m.fromboatid,
@@ -108,11 +107,26 @@ class DB {
     );
 
     const ret = res.rows[0];
+
     /* Let's update unread count */
     if (m.toboatid) {
       await this.updateUnreadCount(m.toboatid);
     }
     return ret;
+  }
+
+  async setReceived(msgid, time) {
+    return await this.client.query(
+      "UPDATE messages SET received_at = $1, updated = CURRENT_TIMESTAMP WHERE msgid = $2",
+      [time, msgid],
+    );
+  }
+
+  async setRead(msgid, time) {
+    return await this.client.query(
+      "UPDATE messages SET read_at = $1, updated = CURRENT_TIMESTAMP WHERE msgid = $2",
+      [time, msgid],
+    );
   }
 
   async updateUnreadCount(boatId) {
@@ -128,7 +142,7 @@ class DB {
     if (!after) after = new Date(2000, 1, 1); // forever ago
 
     const res = await this.client.query(
-      "select messages.*, users.username as fromusername from messages join users on messages.fromuserid = users.user_id WHERE (fromuserid = $1 OR touserid = $1) AND created_at >= $2 AND created_at < $3 ORDER BY created_at DESC LIMIT 100",
+      "select messages.*, users.username as fromusername from messages join users on messages.fromuserid = users.user_id WHERE (fromuserid = $1 OR touserid = $1) AND (sent_at >= $2 OR updated >= $2) AND (sent_at < $3 AND (updated is null or updated < $3)) ORDER BY created_at DESC LIMIT 100",
       [userId, after, before],
     );
 
@@ -450,6 +464,18 @@ class DB {
     return result.rows.length === 0;
   }
 
+  async updateNick(user_id, nick) {
+    const result = await this.client.query(
+      "UPDATE users SET username = $1 WHERE user_id = $2 RETURNING *",
+      [nick, user_id],
+    );
+    if (result.rows.length) {
+      return result.rows[0];
+    } else {
+      return null;
+    }
+  }
+
   async createUser(user) {
     const result = await this.client.query(
       "INSERT INTO users (username, email, created_time, apple_id, google_id) VALUES ($1, $2, NOW(), $3, $4) RETURNING *",
@@ -461,6 +487,25 @@ class DB {
     } else {
       return null;
     }
+  }
+
+  async getPushToken(userId) {
+    const result = await this.client.query(
+      "SELECT pushtoken FROM users where user_id = $1",
+      [userId],
+    );
+    if (result.rows.length) {
+      return result.rows[0].pushtoken;
+    } else {
+      return null;
+    }
+  }
+
+  async updatePushToken(userId, pushToken) {
+    return await this.client.query(
+      "UPDATE users SET pushtoken = $1 WHERE user_id = $2",
+      [pushToken, userId],
+    );
   }
 
   /*

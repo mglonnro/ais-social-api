@@ -1,3 +1,4 @@
+import "dotenv/config";
 import DB from "./db.js";
 import fs from "fs";
 import Hasher from "./hasher.js";
@@ -14,12 +15,20 @@ import GeoJSON from "geojson";
 import { getIdFromToken } from "./auth/appleAuth.mjs";
 import { googleGetIdFromToken } from "./auth/googleAuth.mjs";
 import { createUser, getUniqueNickName } from "./users.js";
-import { hasToken, getUserIdFromHeaders, makeToken } from "./auth/token.mjs";
+import {
+  hasToken,
+  getUserIdFromHeaders,
+  getTokenFromHeaders,
+  makeToken,
+} from "./auth/token.mjs";
 import { v4 as uuidv4 } from "uuid";
 import imageType, { minimumBytes } from "image-type";
 import { uploadToStorage } from "./fb.mjs";
 import { getSpotScore } from "./score.js";
 import { claimProcess, STATUS_RUNNING, STATUS_CLAIMED } from "./claim.js";
+import { Notify } from "./notify.js";
+
+const notify = new Notify();
 
 const port = process.env.PORT;
 const upload = multer({ dest: "useruploads/" });
@@ -27,9 +36,8 @@ const upload = multer({ dest: "useruploads/" });
 import http from "http";
 import express from "express";
 
-/*
 import WebSocket from "ws";
-*/
+let server_ws; // for backend talking to msg-server
 
 const app = express();
 const server = http.createServer(app);
@@ -103,6 +111,49 @@ aisstate = Object.assign({}, StateFile.readJSON("ais.state"));
 delete aisstate.state;
 
 var dataservers = {};
+
+/* backend websocket connection */
+let bws_starting = false;
+
+setInterval(() => {
+  if (!server_ws) {
+    console.log("[SERVERWS] opening new");
+    server_ws = new WebSocket("ws://localhost:3110");
+
+    server_ws.on("error", (event) => {
+      console.error("[SERVERWS] error", event);
+      server_ws = null;
+    });
+
+    server_ws.on("close", () => {
+      console.error("[SERVERWS] closed");
+      server_ws = null;
+    });
+
+    server_ws.on("open", () => {
+      console.log("[SERVERWS] Open");
+      server_ws.send(
+        JSON.stringify({
+          cmd: "backendAuth",
+          backendSecret: process.env.BACKEND_SECRET,
+        }),
+      );
+    });
+
+    server_ws.on("message", async (event) => {
+      console.log("[SERVERWS] Message", event.toString());
+    });
+
+    server_ws.on("pong", () => {
+      // console.log("[SERVERWS] pong");
+    });
+  }
+
+  if (server_ws && server_ws.readyState === 1) {
+    server_ws.ping();
+  }
+
+}, 1000);
 
 /*
 const wss = new WebSocket.Server({ clientTracking: false, noServer: true });
@@ -213,7 +264,7 @@ function setPing(boatId, clientNo) {
   }
 
   console.log("Got ping from", boatId, clientNo);
-  pings[boatId][clientNo] = new Date();
+  pings[boatId][clientNmo] = new Date();
   setPingPause(boatId, clientNo, false);
 }
 
@@ -376,6 +427,27 @@ app.get("/nick", async (req, res) => {
   res.status(200).end();
 });
 
+app.put("/users/:userId/username", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  if (!userId) {
+    res.status(401).end();
+  } else {
+    const nick = req.body.username;
+    const ok = await db.isNickAvailable(nick);
+    if (!ok) {
+      res.send({ isDuplicate: true }).end();
+    } else {
+      const ret = await db.updateNick(userId, nick);
+      if (ret) {
+        res.send(ret).end();
+      } else {
+        res.status(500).end();
+      }
+    }
+  }
+});
+
 let claimStatus = {},
   claimCancel = {},
   claimPosition = {};
@@ -441,6 +513,22 @@ app.put("/claims/process/:processId/location/:state", async (req, res) => {
   }
 });
 
+app.put("/users/:userId/pushtoken", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  if (!userId) {
+    res.status(401).end();
+  }
+
+  const pushToken = req.body.pushToken;
+  const ret = await db.updatePushToken(userId, pushToken);
+  if (ret) {
+    res.send(ret);
+  } else {
+    res.status(500).end();
+  }
+});
+
 app.delete("/claims/:claimId", async (req, res) => {
   const userId = getUserIdFromHeaders(req.headers);
   const claimId = req.params.claimId;
@@ -488,12 +576,13 @@ app.post("/messages", async (req, res) => {
   const userId = getUserIdFromHeaders(req.headers);
   const data = req.body; // a message
 
-  console.log("POST message", data);
+  console.log("[" + userId + "] POST message", data);
 
   if (data.fromuserid !== userId) {
     res.status(401).end();
     return;
   }
+
 
   /* Figure out touserid */
   if (data.toboatid) {
@@ -508,6 +597,34 @@ app.post("/messages", async (req, res) => {
     } else {
       ret.server_id = ret.id;
       delete ret.id;
+
+      console.log("[" + userId + "] POST inserted", ret, data.touserid);
+
+      /* Post notification here */
+      if (data.touserid) {
+        const to = await db.getUser(data.touserid);
+        const from = await db.getUser(data.fromuserid);
+
+        if (to?.pushtoken) {
+          console.log("Got pushToken", to.pushtoken);
+          notify.sendMessage(from, to, ret);
+        }
+      }
+
+      if (server_ws) {
+        server_ws.send(
+          JSON.stringify({
+            forward: true,
+            backendSecret: process.env.BACKEND_SECRET,
+            data: {
+              cmd: "forwardmsg",
+              token: getTokenFromHeaders(req.headers),
+              data: ret,
+            },
+          }),
+        );
+        
+      } 
 
       res.send(ret);
       res.status(200).end();
@@ -526,9 +643,89 @@ app.get("/users/:userId/messages", async (req, res) => {
     after = new Date(req.query.after);
   }
 
+  console.log("[" + userId + "] GET messages after", after);
+
   if (userId && userId === parseInt(req.params.userId)) {
     const msgs = await db.getUserMessages(userId, after);
+    console.log(
+      "[" + userId + "] RET",
+      msgs.after,
+      "=>",
+      msgs.before,
+      msgs.messages.length,
+    );
     res.send(msgs);
+  } else {
+    res.status(401).end();
+  }
+});
+
+app.patch("/messages", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  if (userId) {
+    for (const msg of req.body) {
+      console.log("MSG", msg);
+      if (server_ws) {
+        server_ws.send(
+          JSON.stringify({
+            forward: true,
+            backendSecret: process.env.BACKEND_SECRET,
+            data: {
+              cmd: "updatemsg",
+              token: getTokenFromHeaders(req.headers),
+              data: msg,
+            },
+          }),
+        );
+      } else {
+        console.error("No backend server :/");
+        res.status(500).end();
+        return;
+      }
+      /*
+      if (msg.received_at) {
+        await db.setReceived(msg.msgid, new Date(msg.received_at));
+      }
+
+      if (msg.read_at) {
+        await db.setRead(msg.msgid, new Date(msg.read_at));
+      }
+      */
+    }
+
+    res.send(req.body);
+    res.status(200).end();
+  } else {
+    res.status(401).end();
+  }
+});
+
+app.patch("/messages/received", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  if (userId) {
+    for (const msg of req.body) {
+      await db.setReceived(msg.id, new Date(msg.received_at));
+    }
+
+    res.send(req.body);
+    res.status(200).end();
+  } else {
+    res.status(401).end();
+  }
+});
+
+app.patch("/messages/read", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+
+  if (userId) {
+    for (const msg of req.body) {
+      await db.setRead(msg.id, new Date(msg.read_at));
+    }
+
+    res.send(req.body);
+    res.status(200).end();
   } else {
     res.status(401).end();
   }
@@ -711,164 +908,6 @@ app.delete("/users/:userId/spot/:boatId", async (req, res) => {
   }
 });
 
-/*
-app.post("/boats", async (req, res) => {
-  let userid = await auth.getUserId(req.headers.authorization);
-  let data = req.body;
-  console.log("data", data);
-
-  const id = await db.addBoat(userid, data);
-  if (!id) {
-    res.status(500).end();
-    return;
-  }
-
-  const boatdata = await db.getBoat(id);
-  res.append("Content-Type", "application/json");
-  res.send(boatdata);
-});
-*/
-
-/*
-app.get("/boats/:boatId", async (req, res) => {
-  console.log(new Date(), "GET boats/{boatId}");
-
-  let access = await auth.getUserAccess(
-    req.params.boatId,
-    req.headers.authorization,
-    req.query.api_key
-  );
-
-  console.log(
-    "access",
-    req.params.boatId,
-    access,
-    req.headers.authorization,
-    req.query.api_key
-  );
-
-  if (!access.read) {
-    res.status(401).end();
-    return;
-  }
-
-  var data = await db.getBoat(req.params.boatId);
-
-  // we're not returning this, KISS
-  delete data.shortId;
-
-  res.append("Content-Type", "application/json");
-  res.send(data);
-
-  console.log(new Date(), "END");
-});
-*/
-
-/*
-const UPLOADDIR = "uploads";
-const BUCKET = "gs://charlotte-data";
-const PUBLICBUCKET = "gs://charlotte-public";
-
-app.put("/boats/:boatId/photo", async (req, res) => {
-  console.log("PUT PHOTO", typeof req.body);
-  let data = req.body;
-  let fname = req.params.boatId + "_128";
-
-  base64Img.img(data, UPLOADDIR, fname, (err, filepath) => {
-    if (err != null) {
-      console.error(err);
-      res.status(500).end();
-    } else {
-      let filename =
-        PUBLICBUCKET + "/" + req.params.boatId + "/" + path.basename(filepath);
-      console.log("filename", filename, "filepath", filepath, "err", err);
-
-      exec("gsutil cp " + filepath + " " + filename, (err, stdout, stderr) => {
-        if (err) {
-          console.error("Couldn't upload to Cloud Storage.");
-          console.error(err);
-          console.log(`stdout: ${stdout}`);
-          console.log(`stderr: ${stderr}`);
-          res.status(500).end();
-        }
-        console.log("Upload ok");
-
-        db.setBoatPhoto(
-          req.params.boatId,
-          "https://storage.cloud.google.com/charlotte-public/" +
-            req.params.boatId +
-            "/" +
-            path.basename(filepath)
-        );
-      });
-    }
-  });
-});
-
-app.get("/boat/:boatId/hash/:objectName", async (req, res) => {
-  let filename = BUCKET + "/" + req.params.boatId + "/" + req.params.objectName;
-
-  exec("gsutil stat " + filename, (err, stdout, stderr) => {
-    if (err) {
-      console.error(err);
-      console.log(`stdeerr: ${stderr}`);
-      res.status(500).end();
-    } else {
-      let arr = stdout.split("\n");
-      for (let x = 0; x < arr.length; x++) {
-        if (arr[x].indexOf("(md5)") != -1) {
-          var hash = arr[x].substring(arr[x].indexOf(":") + 1);
-          hash = hash.trim();
-          //res.append("Content-Type", "application/json");
-          //res.send(JSON.stringify({ hash: hash }));
-          res.append("Content-Type", "text/plain");
-          res.send(hash);
-          return;
-        }
-      }
-      res.status(500).end();
-    }
-  });
-});
-
-//
-// Process a file uploaded to the cloud storage
-//
-app.get("/boats/:boatId/process/:fileId", async (req, res, next) => {
-  try {
-    var ret = await fileProcessor.processFile(
-      req.params.boatId,
-      req.params.fileId
-    );
-    res.status(ret.status).end();
-  } catch (err) {
-    console.error(err);
-    res.status(500).end();
-  }
-});
-
-app.get("/boats/:boatId/files/:fileId/status", async (req, res, next) => {
-  let status = await db.getFileStatus(req.params.boatId, req.params.fileId);
-  if (!status) {
-    status = {};
-  }
-
-  res.append("Content-Type", "application/json");
-  res.send(JSON.stringify(status));
-});
-
-app.post(
-  "/boats/:boatId/upload",
-  upload.array("files", 12),
-  function (req, res, next) {
-    console.log("In upload");
-    // req.files is array of `photos` files
-    //   // req.body will contain the text fields, if there were any
-    console.dir(req.files);
-  }
-);
-*/
-
 app.get("/", async (req, res) => {
   res.append("Content-Type", "application/json");
   res.send(JSON.stringify({ hello: "World" }));
@@ -880,5 +919,5 @@ app.get("/ping", async (req, res) => {
 });
 
 server.listen(port, () =>
-  console.log(`AIS Social APIlistening on port ${port}!`),
+  console.log(`AIS Social API listening on port ${port}!`),
 );
