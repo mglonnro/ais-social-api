@@ -12,11 +12,11 @@ import { SCORE_TYPE_SPOT } from "./constants.js";
 class DB {
   constructor() {
     this.client = new Client({
-      user: "postgres",
-      host: "localhost",
-      database: "aissocial",
-      password: "Kikku2020",
-      port: 5432,
+      user: process.env.PGUSER,
+      host: process.env.PGHOST,
+      database: process.env.PGDATABASE,
+      password: process.env.PGPASSWORD,
+      port: parseInt(process.env.PGPORT, 10),
     });
 
     // this.fb = loadDB();
