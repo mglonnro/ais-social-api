@@ -27,6 +27,7 @@ import { uploadToStorage } from "./fb.mjs";
 import { getSpotScore } from "./score.js";
 import { claimProcess, STATUS_RUNNING, STATUS_CLAIMED } from "./claim.js";
 import { Notify } from "./notify.js";
+import { getBoatAIS } from "./ais.js";
 
 const notify = new Notify();
 
@@ -734,7 +735,12 @@ app.patch("/messages/read", async (req, res) => {
 app.get("/boats/:boatId", async (req, res) => {
   // if we have an userid, we'll return user specific extra info with the boat
   const userId = getUserIdFromHeaders(req.headers);
-  const boat = await db.getBoatByMMSI(req.params.boatId);
+
+  // Fetch DB data and AIS data in parallel
+  const [boat, aisData] = await Promise.all([
+    db.getBoatByMMSI(req.params.boatId),
+    getBoatAIS(req.params.boatId),
+  ]);
 
   // set estimated score for new spot
   boat.spot_score = getSpotScore(boat.spot_count);
@@ -754,6 +760,20 @@ app.get("/boats/:boatId", async (req, res) => {
   console.log("boatMedia", boatMedia);
   if (boatMedia) {
     boat.media = boatMedia;
+  }
+
+  // Merge AIS real-time data
+  if (aisData) {
+    boat.ais = {
+      ShipType: aisData.ShipType,
+      CallSign: aisData.CallSign,
+      ImoNumber: aisData.ImoNumber,
+      Dimension: aisData.Dimension,
+      Destination: aisData.Destination,
+      Draught: aisData.Draught,
+      Eta: aisData.Eta,
+      NavigationalStatus: aisData.NavigationalStatus,
+    };
   }
 
   console.log("returning boat", boat);
