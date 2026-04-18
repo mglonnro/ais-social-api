@@ -34,6 +34,9 @@ const notify = new Notify();
 const port = process.env.PORT;
 const upload = multer({ dest: "useruploads/" });
 
+const UPLOADS_DIR = "./uploads";
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
 import http from "http";
 import express from "express";
 
@@ -375,44 +378,84 @@ app.delete("/users/:userId", async (req, res) => {
   }
 });
 
-app.patch("/image-upload/:mmsi", async (req, res) => {
-  const userId = getUserIdFromHeaders(req.headers);
+app.patch(
+  "/image-upload/:mmsi",
+  bodyParser.raw({ type: "image/*", limit: "20mb" }),
+  async (req, res) => {
+    const userId = getUserIdFromHeaders(req.headers);
 
-  if (!userId) {
-    res.status(401).end();
-    return;
-  }
-
-  console.log("binary-upload", req.body.length);
-
-  const type = await imageType(req.body);
-  console.log("image type", type);
-
-  const _fname = uuidv4();
-  const fname = "./uploads/" + _fname;
-  fs.writeFileSync(fname, req.body);
-
-  // upload to storage
-  const file = await uploadToStorage(req.params.mmsi, fname, _fname, type.mime);
-
-  const boat = await db.getBoatByMMSI(req.params.mmsi);
-  const STORAGE_BASE = "https://storage.googleapis.com/ais-social.appspot.com/";
-
-  if (boat) {
-    const result = await db.postBoatMedia(
-      userId,
-      boat.boat_id,
-      STORAGE_BASE + file[0].metadata.name,
-    );
-    if (result) {
-      res.send(result);
-      res.status(200).end();
+    if (!userId) {
+      res.status(401).json({ error: "unauthorized" });
       return;
     }
-  }
 
-  res.status(500).end();
-});
+    let fname;
+    try {
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        res.status(400).json({
+          error: "empty_body",
+          message:
+            "Request body was empty or not a binary image. Ensure Content-Type is image/* and the body is raw bytes.",
+        });
+        return;
+      }
+
+      console.log("binary-upload", req.body.length, "bytes");
+
+      const type = await imageType(req.body);
+      if (!type) {
+        res.status(400).json({
+          error: "unrecognized_image",
+          message: "Could not determine image type from request body.",
+        });
+        return;
+      }
+      console.log("image type", type);
+
+      const _fname = uuidv4();
+      fname = `${UPLOADS_DIR}/${_fname}`;
+      fs.writeFileSync(fname, req.body);
+
+      const file = await uploadToStorage(
+        req.params.mmsi,
+        fname,
+        _fname,
+        type.mime,
+      );
+
+      const boat = await db.getBoatByMMSI(req.params.mmsi);
+      const STORAGE_BASE =
+        "https://storage.googleapis.com/ais-social.appspot.com/";
+
+      if (!boat) {
+        res.status(404).json({ error: "boat_not_found" });
+        return;
+      }
+
+      const result = await db.postBoatMedia(
+        userId,
+        boat.boat_id,
+        STORAGE_BASE + file[0].metadata.name,
+      );
+
+      if (!result) {
+        res.status(500).json({ error: "persist_failed" });
+        return;
+      }
+
+      res.status(200).json(result);
+    } catch (e) {
+      console.error("image-upload error", e);
+      res
+        .status(500)
+        .json({ error: "server_error", message: e?.message || String(e) });
+    } finally {
+      if (fname) {
+        fs.unlink(fname, () => {});
+      }
+    }
+  },
+);
 
 app.patch("/multipart-upload", upload.single("photo"), (req, res) => {
   console.log("multipart");
