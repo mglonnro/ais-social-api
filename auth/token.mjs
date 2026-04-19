@@ -1,6 +1,10 @@
+import "dotenv/config";
 import jwt from "jsonwebtoken";
 
-const SECRET="234ojfCZER5102u9rwerouS";
+const SECRET = process.env.JSON_SECRET;
+if (!SECRET) {
+  throw new Error("JSON_SECRET environment variable must be set (shared with msg-server)");
+}
 
 const hasToken = (headers) => {
   if (headers && headers["authorization"]) {

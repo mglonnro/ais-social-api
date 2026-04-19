@@ -26,10 +26,7 @@ import imageType, { minimumBytes } from "image-type";
 import { uploadToStorage } from "./fb.mjs";
 import { getSpotScore } from "./score.js";
 import { claimProcess, STATUS_RUNNING, STATUS_CLAIMED } from "./claim.js";
-import { Notify } from "./notify.js";
 import { getBoatAIS } from "./ais.js";
-
-const notify = new Notify();
 
 const port = process.env.PORT;
 const upload = multer({ dest: "useruploads/" });
@@ -644,16 +641,9 @@ app.post("/messages", async (req, res) => {
 
       console.log("[" + userId + "] POST inserted", ret, data.touserid);
 
-      /* Post notification here */
-      if (data.touserid) {
-        const to = await db.getUser(data.touserid);
-        const from = await db.getUser(data.fromuserid);
-
-        if (to?.pushtoken) {
-          console.log("Got pushToken", to.pushtoken);
-          notify.sendMessage(from, to, ret);
-        }
-      }
+      /* Push notifications are fired by msg-server's sendmsg handler
+       * when it receives the forwarded envelope below. Firing here too
+       * would double-notify the recipient. */
 
       if (server_ws) {
         server_ws.send(
