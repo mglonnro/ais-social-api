@@ -694,46 +694,9 @@ app.get("/users/:userId/messages", async (req, res) => {
   }
 });
 
-app.patch("/messages", async (req, res) => {
-  const userId = getUserIdFromHeaders(req.headers);
-
-  if (userId) {
-    for (const msg of req.body) {
-      console.log("MSG", msg);
-      if (server_ws) {
-        server_ws.send(
-          JSON.stringify({
-            forward: true,
-            backendSecret: process.env.BACKEND_SECRET,
-            data: {
-              cmd: "updatemsg",
-              token: getTokenFromHeaders(req.headers),
-              data: msg,
-            },
-          }),
-        );
-      } else {
-        console.error("No backend server :/");
-        res.status(500).end();
-        return;
-      }
-      /*
-      if (msg.received_at) {
-        await db.setReceived(msg.msgid, new Date(msg.received_at));
-      }
-
-      if (msg.read_at) {
-        await db.setRead(msg.msgid, new Date(msg.read_at));
-      }
-      */
-    }
-
-    res.send(req.body);
-    res.status(200).end();
-  } else {
-    res.status(401).end();
-  }
-});
+// PATCH /messages removed — it was a pass-through that forwarded to
+// msg-server's updatemsg, which now persists read_at/received_at
+// directly. Clients use the WebSocket path instead.
 
 app.patch("/messages/received", async (req, res) => {
   const userId = getUserIdFromHeaders(req.headers);
