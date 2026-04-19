@@ -88,8 +88,18 @@ class DB {
   }
 
   async insertMessage(userId, m) {
+    // ON CONFLICT (msgid) makes this idempotent across the two write
+    // paths (POST /messages and msg-server sendmsg). The DO UPDATE is
+    // a no-op on the existing row; we need it so RETURNING always fires.
+    // (xmax = 0) is true for a real insert, false for a conflict update —
+    // we use it to avoid double-incrementing the unread count on replays.
+    // Requires the unique index from migrations/001_messages_unique_msgid.sql.
     const res = await this.client.query(
-      "INSERT INTO messages (userid, fromuserid, touserid, fromboatid, fromboatname, fromboatmmsi, toboatid, toboatname, toboatmmsi, msgid, message, created_at, sent_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP) RETURNING *",
+      `INSERT INTO messages
+         (userid, fromuserid, touserid, fromboatid, fromboatname, fromboatmmsi, toboatid, toboatname, toboatmmsi, msgid, message, created_at, sent_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
+       ON CONFLICT (msgid) DO UPDATE SET sent_at = messages.sent_at
+       RETURNING *, (xmax = 0) AS inserted`,
       [
         userId,
         m.fromuserid,
@@ -107,9 +117,10 @@ class DB {
     );
 
     const ret = res.rows[0];
+    const wasInsert = ret.inserted;
+    delete ret.inserted;
 
-    /* Let's update unread count */
-    if (m.toboatid) {
+    if (wasInsert && m.toboatid) {
       await this.updateUnreadCount(m.toboatid);
     }
     return ret;
@@ -123,10 +134,17 @@ class DB {
   }
 
   async setRead(msgid, time) {
-    return await this.client.query(
-      "UPDATE messages SET read_at = $1, updated = CURRENT_TIMESTAMP WHERE msgid = $2",
+    // Only transition unread → read once. Grab toboatid so we can refresh
+    // the denormalized unread count on the boats row — without this, the
+    // inbox badge stays stuck at its high-water mark.
+    const res = await this.client.query(
+      "UPDATE messages SET read_at = $1, updated = CURRENT_TIMESTAMP WHERE msgid = $2 AND read_at IS NULL RETURNING toboatid",
       [time, msgid],
     );
+    if (res.rows.length && res.rows[0].toboatid) {
+      await this.updateUnreadCount(res.rows[0].toboatid);
+    }
+    return res;
   }
 
   async updateUnreadCount(boatId) {
