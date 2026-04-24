@@ -419,6 +419,14 @@ class DB {
     return { score: total.rows[0].score, addedScore: data.score };
   }
 
+  async updateBoatTopdown(mmsi, uri, lengthM, beamM) {
+    const result = await this.client.query(
+      "UPDATE boats SET topdown_uri = $1, topdown_length_m = $2, topdown_beam_m = $3 WHERE mmsi = $4 RETURNING topdown_uri, topdown_length_m, topdown_beam_m",
+      [uri, lengthM, beamM, mmsi],
+    );
+    return result.rows[0] || null;
+  }
+
   async postBoatMedia(userId, boatId, uri) {
     const result = await this.client.query(
       "INSERT INTO media (boat_id, user_id, uri, created_time) " +

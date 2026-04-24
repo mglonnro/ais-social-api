@@ -20,7 +20,9 @@ import {
   getUserIdFromHeaders,
   getTokenFromHeaders,
   makeToken,
+  isAdmin,
 } from "./auth/token.mjs";
+import { generateBoatTopdown } from "./topdown.mjs";
 import { v4 as uuidv4 } from "uuid";
 import imageType, { minimumBytes } from "image-type";
 import { uploadToStorage } from "./fb.mjs";
@@ -458,6 +460,38 @@ app.patch("/multipart-upload", upload.single("photo"), (req, res) => {
   console.log("multipart");
   console.log(req.body);
   res.end("OK");
+});
+
+// Admin-only: generate/refresh the AI top-down icon for a boat.
+// Gate: caller's user_id must appear in ADMIN_USER_IDS env (comma-separated).
+// Body (optional): { photoIds: number[] } to restrict which media rows feed
+// the prompt; default is all photos for the boat (capped in topdown.mjs).
+app.post("/admin/boats/:mmsi/generate-topdown", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  if (!userId) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  if (!isAdmin(userId)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+
+  try {
+    const result = await generateBoatTopdown(db, req.params.mmsi, {
+      photoIds: req.body?.photoIds,
+    });
+    if (result.status !== 200) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.status(200).json(result.body);
+  } catch (e) {
+    console.error("generate-topdown error", e);
+    res
+      .status(500)
+      .json({ error: "generation_failed", message: e?.message || String(e) });
+  }
 });
 
 app.get("/nick", async (req, res) => {

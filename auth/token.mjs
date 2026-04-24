@@ -57,10 +57,18 @@ const getUserId = (token) => {
   }
 }
 
+const isAdmin = (userId) => {
+  if (!userId) return false;
+  const raw = process.env.ADMIN_USER_IDS || "";
+  const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return ids.includes(String(userId));
+}
+
 export {
   hasToken,
   makeToken,
   verifyToken,
   getUserId,
   getUserIdFromHeaders,
+  isAdmin,
 }
