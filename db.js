@@ -419,6 +419,17 @@ class DB {
     return { score: total.rows[0].score, addedScore: data.score };
   }
 
+  async getBoatsTopdown(mmsis) {
+    // Bulk lookup for the map layer: returns {mmsi, topdown_uri, length, beam}
+    // only for boats that actually have a generated icon.
+    if (!mmsis?.length) return [];
+    const result = await this.client.query(
+      "SELECT mmsi, topdown_uri, topdown_length_m, topdown_beam_m FROM boats WHERE mmsi = ANY($1) AND topdown_uri IS NOT NULL",
+      [mmsis],
+    );
+    return result.rows;
+  }
+
   async updateBoatTopdown(mmsi, uri, lengthM, beamM) {
     const result = await this.client.query(
       "UPDATE boats SET topdown_uri = $1, topdown_length_m = $2, topdown_beam_m = $3 WHERE mmsi = $4 RETURNING topdown_uri, topdown_length_m, topdown_beam_m",
