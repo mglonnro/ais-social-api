@@ -17,7 +17,7 @@ export const STATUS_CLAIMED = "claimed";
 export const STATUS_RUNNING = "running";
 
 export const claimProcess = (boatId, userId, cbStatus) => {
-  let ws = new WebSocket("ws://127.0.0.1:3105/");
+  let ws = new WebSocket(process.env.AIS_SERVER_URL || "ws://127.0.0.1:3105/");
   let stage = STAGES.RECEIVE_AIS_1,
     timestamp;
   let t1;
