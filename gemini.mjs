@@ -8,17 +8,19 @@ const ai = new GoogleGenAI({});
 
 const buildPrompt = (lengthM, beamM) => {
   const ratio = (lengthM / beamM).toFixed(2);
-  // V2: chroma-green background instead of "transparent" (which Gemini
-  // routinely ignores) — we key the green to alpha in topdown.mjs.
-  // Tight-framing language to keep the boat from rendering as a tiny
-  // sliver in the middle of the canvas.
+  // We tell Gemini the boat's real proportions; topdown.mjs stretches the
+  // result to the exact aspect afterwards if Gemini misjudges, so prose
+  // accuracy matters less than getting a clean top-down hull.
   return (
-    `Render a clean top-down aerial view of the exact vessel in the reference photo(s). ` +
-    `Bow points straight up. ` +
-    `The full hull from bow tip to stern must fill the entire image edge-to-edge with no margins or padding — crop tightly. ` +
-    `Hull color, deck layout, and superstructure must match the reference(s). ` +
-    `Boat dimensions: ${lengthM}m long × ${beamM}m wide (length-to-beam ratio ${ratio}:1). ` +
-    `Solid pure chroma-key green background (#00FF00) outside the hull, no shadows, no water, no people, no text, no frame, no border.`
+    `Top-down aerial illustration of the vessel from the reference photo(s). ` +
+    `Bow points to the top of the canvas. ` +
+    `The vessel is exactly ${lengthM} metres long (bow to stern) and ${beamM} metres wide (port to starboard). ` +
+    `Render the boat with this EXACT length-to-beam ratio of ${ratio}:1 — do not distort, stretch, or alter the proportions to fit the canvas. ` +
+    `Match hull color, deck layout, mast(s), and superstructure from the reference(s) as faithfully as possible. ` +
+    `Place the boat so it fills the full canvas HEIGHT (bow at top edge, stern at bottom edge), centered horizontally. ` +
+    `The boat's actual width will occupy whatever fraction of canvas width its real beam-to-length ratio dictates — that is correct. ` +
+    `Fill the rest of the canvas with pure chroma-key green (#00FF00). ` +
+    `No shadows, no water, no people, no text, no frame, no border.`
   );
 };
 
@@ -44,8 +46,10 @@ export const generateTopdown = async (photoBuffers, lengthM, beamM) => {
     throw new Error("At least one reference photo is required");
   }
 
+  const prompt = buildPrompt(lengthM, beamM);
+  console.log("[gemini] prompt:\n" + prompt);
   const parts = [
-    { text: buildPrompt(lengthM, beamM) },
+    { text: prompt },
     ...photoBuffers.map((buf) => ({
       inlineData: {
         mimeType: sniffMimeType(buf),

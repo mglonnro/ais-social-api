@@ -10,6 +10,8 @@
 //
 // Reads PG* + GEMINI_API_KEY + GOOGLE_APPLICATION_CREDENTIALS from .env.
 import "dotenv/config";
+import path from "path";
+import { fileURLToPath } from "url";
 import DB from "../db.js";
 import { generateBoatTopdown } from "../topdown.mjs";
 
@@ -22,11 +24,15 @@ const photoIds = process.argv[3]
   ? process.argv[3].split(",").map((s) => parseInt(s.trim(), 10))
   : undefined;
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const debugDir = path.join(__dirname, "..", "tmp", "topdown-debug", String(mmsi));
+
 const main = async () => {
   const db = new DB();
   await db.connect();
   console.log(`Generating top-down for MMSI ${mmsi}...`);
-  const result = await generateBoatTopdown(db, mmsi, { photoIds });
+  console.log(`Intermediate buffers will be saved to ${debugDir}`);
+  const result = await generateBoatTopdown(db, mmsi, { photoIds, debugDir });
   console.log("\nResult:");
   console.log(JSON.stringify(result, null, 2));
   await db.close();

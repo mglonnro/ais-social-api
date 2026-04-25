@@ -1,10 +1,12 @@
 import sharp from "sharp";
+import fs from "fs/promises";
+import path from "path";
 import { getBoatAIS } from "./ais.js";
 import { generateTopdown } from "./gemini.mjs";
 import { uploadBufferToStorage, downloadFromStorage } from "./fb.mjs";
 
 const MAX_REF_PHOTOS = 4;
-const ICON_LONG_EDGE_PX = 128;
+const ICON_LONG_EDGE_PX = 384;
 const TRIM_THRESHOLD = 40;   // out of 255 — tolerant of JPEG artifacts
 
 // Two URL formats appear in `media.uri`:
@@ -56,67 +58,37 @@ const chromaKeyGreen = async (pngBuffer) => {
     .toBuffer();
 };
 
-// Crops the Gemini output so width:height matches the boat's real beam:length,
-// then resizes so the longest edge is ICON_LONG_EDGE_PX.
-const finalizeIcon = async (rawPng, lengthM, beamM) => {
-  // 0. Chroma-key the green Gemini paints to alpha=0.
-  const keyed = await chromaKeyGreen(rawPng);
-
-  // 1. Trim transparent padding around the boat. Threshold tolerates the
-  //    soft-edge ramp from chromaKeyGreen.
-  const trimmed = await sharp(keyed).trim({ threshold: TRIM_THRESHOLD }).toBuffer();
-  const meta = await sharp(trimmed).metadata();
-  const w = meta.width;
-  const h = meta.height;
-
-  // 2. Pad (letterbox) to the target beam:length aspect — crop would discard
-  //    hull; padding keeps everything Gemini rendered inside the canvas.
-  //    Oriented bow-up: height = length (longer), width = beam (shorter).
-  const targetAspect = beamM / lengthM; // width / height
-  const currentAspect = w / h;
-
-  let padded;
-  if (currentAspect > targetAspect) {
-    // Too wide — add vertical padding to make it taller
-    const newH = Math.round(w / targetAspect);
-    const top = Math.round((newH - h) / 2);
-    padded = await sharp(trimmed)
-      .extend({
-        top,
-        bottom: newH - h - top,
-        left: 0,
-        right: 0,
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
-      })
-      .toBuffer();
-  } else if (currentAspect < targetAspect) {
-    // Too tall — add horizontal padding
-    const newW = Math.round(h * targetAspect);
-    const left = Math.round((newW - w) / 2);
-    padded = await sharp(trimmed)
-      .extend({
-        top: 0,
-        bottom: 0,
-        left,
-        right: newW - w - left,
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
-      })
-      .toBuffer();
-  } else {
-    padded = trimmed;
-  }
-
-  // 3. Resize so the longer edge is 128 px.
-  const meta2 = await sharp(padded).metadata();
-  const resizeOpts =
-    meta2.height >= meta2.width
-      ? { height: ICON_LONG_EDGE_PX }
-      : { width: ICON_LONG_EDGE_PX };
-
-  return await sharp(padded).resize(resizeOpts).png().toBuffer();
+const writeDebug = async (debugDir, name, buf) => {
+  if (!debugDir) return;
+  await fs.mkdir(debugDir, { recursive: true });
+  await fs.writeFile(path.join(debugDir, name + ".png"), buf);
 };
 
-export const generateBoatTopdown = async (db, mmsi, { photoIds } = {}) => {
+// Stretches/squeezes the trimmed Gemini output to exactly the boat's real
+// beam:length aspect at ICON_LONG_EDGE_PX on the long side. Trust the prompt
+// to get the shape right; sharp's fit:'fill' is a no-op when Gemini honours
+// it and a small distortion otherwise. No transparent padding.
+const finalizeIcon = async (rawPng, lengthM, beamM, debugDir) => {
+  await writeDebug(debugDir, "0_raw", rawPng);
+
+  const keyed = await chromaKeyGreen(rawPng);
+  await writeDebug(debugDir, "1_keyed", keyed);
+
+  const trimmed = await sharp(keyed).trim({ threshold: TRIM_THRESHOLD }).toBuffer();
+  await writeDebug(debugDir, "2_trimmed", trimmed);
+
+  // Output is bow-up: height = length, width = beam.
+  const targetH = ICON_LONG_EDGE_PX;
+  const targetW = Math.max(1, Math.round(targetH * (beamM / lengthM)));
+  const final = await sharp(trimmed)
+    .resize(targetW, targetH, { fit: "fill" })
+    .png()
+    .toBuffer();
+  await writeDebug(debugDir, "3_final", final);
+  return final;
+};
+
+export const generateBoatTopdown = async (db, mmsi, { photoIds, debugDir } = {}) => {
   const boat = await db.getBoatByMMSI(mmsi);
   if (!boat) {
     return { status: 404, error: "boat_not_found" };
@@ -149,7 +121,7 @@ export const generateBoatTopdown = async (db, mmsi, { photoIds } = {}) => {
   const buffers = await Promise.all(chosen.map((m) => fetchBuffer(m.uri)));
 
   const rawPng = await generateTopdown(buffers, lengthM, beamM);
-  const finalized = await finalizeIcon(rawPng, lengthM, beamM);
+  const finalized = await finalizeIcon(rawPng, lengthM, beamM, debugDir);
 
   const destination = `images/topdown/${mmsi}.png`;
   const uri = await uploadBufferToStorage(finalized, destination, "image/png");

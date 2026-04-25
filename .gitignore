@@ -7,6 +7,7 @@ node_modules/
 keys/*-service-account*.json
 uploads/
 useruploads/
+tmp/
 ais.json
 *.log
 .DS_Store
