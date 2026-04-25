@@ -1,12 +1,25 @@
 import sharp from "sharp";
 import { getBoatAIS } from "./ais.js";
 import { generateTopdown } from "./gemini.mjs";
-import { uploadBufferToStorage } from "./fb.mjs";
+import { uploadBufferToStorage, downloadFromStorage } from "./fb.mjs";
 
 const MAX_REF_PHOTOS = 4;
 const ICON_LONG_EDGE_PX = 128;
 
+// Two URL formats appear in `media.uri`:
+// - storage.googleapis.com/<bucket>/<obj>  — raw GCS, private, needs auth
+// - firebasestorage.googleapis.com/...?token=... — has a download token
+// The first 403s on plain fetch; route those through the Storage SDK so
+// our service-account creds are applied.
 const fetchBuffer = async (uri) => {
+  const u = new URL(uri);
+  if (u.hostname === "storage.googleapis.com") {
+    const path = u.pathname.replace(/^\//, "");
+    const slash = path.indexOf("/");
+    const bucketName = path.slice(0, slash);
+    const objectName = decodeURIComponent(path.slice(slash + 1));
+    return await downloadFromStorage(bucketName, objectName);
+  }
   const r = await fetch(uri);
   if (!r.ok) {
     throw new Error(`Failed to fetch ${uri}: ${r.status} ${r.statusText}`);

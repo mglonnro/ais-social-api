@@ -33,4 +33,13 @@ const uploadBufferToStorage = async (buffer, destination, contentType) => {
   return PUBLIC_BASE + destination;
 };
 
-export { uploadToStorage, uploadBufferToStorage };
+// Downloads an object from any bucket using the service-account credentials.
+// Needed because user-uploaded media in our bucket is not publicly readable —
+// plain `fetch` against the storage.googleapis.com URL returns 403.
+const downloadFromStorage = async (bucketName, objectName) => {
+  const storage = new Storage({ projectId: PROJECT_ID });
+  const [buf] = await storage.bucket(bucketName).file(objectName).download();
+  return buf;
+};
+
+export { uploadToStorage, uploadBufferToStorage, downloadFromStorage };
