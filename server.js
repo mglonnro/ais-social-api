@@ -20,7 +20,9 @@ import {
   getUserIdFromHeaders,
   getTokenFromHeaders,
   makeToken,
+  isAdmin,
 } from "./auth/token.mjs";
+import { generateBoatTopdown } from "./topdown.mjs";
 import { v4 as uuidv4 } from "uuid";
 import imageType, { minimumBytes } from "image-type";
 import { uploadToStorage } from "./fb.mjs";
@@ -119,7 +121,7 @@ let bws_starting = false;
 setInterval(() => {
   if (!server_ws) {
     console.log("[SERVERWS] opening new");
-    server_ws = new WebSocket("ws://localhost:3110");
+    server_ws = new WebSocket(process.env.MSG_SERVER_URL || "ws://localhost:3110");
 
     server_ws.on("error", (event) => {
       console.error("[SERVERWS] error", event);
@@ -460,6 +462,38 @@ app.patch("/multipart-upload", upload.single("photo"), (req, res) => {
   res.end("OK");
 });
 
+// Admin-only: generate/refresh the AI top-down icon for a boat.
+// Gate: caller's user_id must appear in ADMIN_USER_IDS env (comma-separated).
+// Body (optional): { photoIds: number[] } to restrict which media rows feed
+// the prompt; default is all photos for the boat (capped in topdown.mjs).
+app.post("/admin/boats/:mmsi/generate-topdown", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  if (!userId) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  if (!isAdmin(userId)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+
+  try {
+    const result = await generateBoatTopdown(db, req.params.mmsi, {
+      photoIds: req.body?.photoIds,
+    });
+    if (result.status !== 200) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.status(200).json(result.body);
+  } catch (e) {
+    console.error("generate-topdown error", e);
+    res
+      .status(500)
+      .json({ error: "generation_failed", message: e?.message || String(e) });
+  }
+});
+
 app.get("/nick", async (req, res) => {
   // todo add auth
   const nickName = await getUniqueNickName();
@@ -725,6 +759,20 @@ app.patch("/messages/read", async (req, res) => {
     res.status(200).end();
   } else {
     res.status(401).end();
+  }
+});
+
+// Returns the full list of boats that have an AI top-down icon. The set is
+// small (manually generated), so the map client fetches it once and uses
+// the response as a local lookup table — no per-viewport round-trips.
+app.get("/boats/topdowns", async (req, res) => {
+  try {
+    const rows = await db.getAllTopdowns();
+    res.append("Content-Type", "application/json");
+    res.status(200).send(rows);
+  } catch (e) {
+    console.error("boats/topdowns error", e);
+    res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });
 
