@@ -420,22 +420,32 @@ class DB {
   }
 
   async getAllTopdowns() {
-    // Returns every boat that has a generated icon. The set is small
-    // (manually-generated; tens, eventually maybe hundreds), so the map
-    // client just fetches all of them once and uses the result as a
-    // local lookup table.
+    // Returns every boat with either a generated icon OR an in-flight /
+    // failed regeneration. The client uses this as both the icon lookup
+    // table (map renders rows that have topdown_uri) and the live status
+    // source (boat detail screen shows a banner when topdown_status is
+    // 'rendering' or 'failed'). One endpoint, polled globally.
     const result = await this.client.query(
-      "SELECT mmsi, topdown_uri, topdown_length_m, topdown_beam_m FROM boats WHERE topdown_uri IS NOT NULL",
+      "SELECT mmsi, topdown_uri, topdown_length_m, topdown_beam_m, topdown_status FROM boats WHERE topdown_uri IS NOT NULL OR topdown_status IS NOT NULL",
     );
     return result.rows;
   }
 
   async updateBoatTopdown(mmsi, uri, lengthM, beamM) {
+    // Clear topdown_status on success — the regeneration is done and the
+    // new uri is now live, so any 'rendering' or 'failed' state is stale.
     const result = await this.client.query(
-      "UPDATE boats SET topdown_uri = $1, topdown_length_m = $2, topdown_beam_m = $3 WHERE mmsi = $4 RETURNING topdown_uri, topdown_length_m, topdown_beam_m",
+      "UPDATE boats SET topdown_uri = $1, topdown_length_m = $2, topdown_beam_m = $3, topdown_status = NULL WHERE mmsi = $4 RETURNING topdown_uri, topdown_length_m, topdown_beam_m",
       [uri, lengthM, beamM, mmsi],
     );
     return result.rows[0] || null;
+  }
+
+  async setTopdownStatus(mmsi, status) {
+    await this.client.query(
+      "UPDATE boats SET topdown_status = $1 WHERE mmsi = $2",
+      [status, mmsi],
+    );
   }
 
   async postBoatMedia(userId, boatId, uri) {

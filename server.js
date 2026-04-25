@@ -377,6 +377,55 @@ app.delete("/users/:userId", async (req, res) => {
   }
 });
 
+// Fire-and-forget regeneration kicked off by every successful media upload.
+// We never await this from the request handler — the upload response goes
+// out first and Gemini cooks in the background. The map picks up the new
+// icon via the global topdowns poll once topdown_uri is updated.
+//
+// Coordination: if a regeneration is already in flight for this MMSI we
+// skip launching another. The in-flight one re-queries getBoatMedia at
+// the moment it runs, so it generally picks up the just-uploaded photo
+// without a second pass. (Edge case: a photo that lands AFTER the
+// in-flight regen has already queried media misses this round; user can
+// trigger another via a follow-up upload, which clears 'rendering' once
+// the in-flight one finishes.)
+const triggerAutoTopdown = async (mmsi, boatId) => {
+  try {
+    const cur = await db.getBoatByMMSI(mmsi);
+    if (cur?.topdown_status === "rendering") {
+      console.log("[topdown-auto] already rendering, skipping", mmsi);
+      return;
+    }
+
+    const allMedia = await db.getBoatMedia(boatId);
+    if (!allMedia?.length) {
+      console.log("[topdown-auto] no media yet, skipping", mmsi);
+      return;
+    }
+    // getBoatMedia returns ASC by created_time; newest 4 are at the tail.
+    const newestIds = allMedia.slice(-4).map((m) => m.id);
+
+    await db.setTopdownStatus(mmsi, "rendering");
+    console.log("[topdown-auto] starting", mmsi, "with", newestIds.length, "photos");
+
+    const result = await generateBoatTopdown(db, mmsi, { photoIds: newestIds });
+    if (result.status === 200) {
+      // updateBoatTopdown clears topdown_status as part of the success path.
+      console.log("[topdown-auto] complete", mmsi);
+    } else {
+      console.warn("[topdown-auto] generation failed", mmsi, result.status, result.error);
+      await db.setTopdownStatus(mmsi, "failed");
+    }
+  } catch (e) {
+    console.error("[topdown-auto] crashed", mmsi, e?.message || String(e));
+    try {
+      await db.setTopdownStatus(mmsi, "failed");
+    } catch (_) {
+      /* swallow — DB likely down; status will appear stale until next attempt */
+    }
+  }
+};
+
 app.patch(
   "/image-upload/:mmsi",
   bodyParser.raw({ type: "image/*", limit: "20mb" }),
@@ -443,6 +492,10 @@ app.patch(
       }
 
       res.status(200).json(result);
+
+      // Fire-and-forget topdown regen. We've already responded to the
+      // client; this runs to completion in the background.
+      triggerAutoTopdown(req.params.mmsi, boat.boat_id);
     } catch (e) {
       console.error("image-upload error", e);
       res
@@ -762,9 +815,10 @@ app.patch("/messages/read", async (req, res) => {
   }
 });
 
-// Returns the full list of boats that have an AI top-down icon. The set is
-// small (manually generated), so the map client fetches it once and uses
-// the response as a local lookup table — no per-viewport round-trips.
+// Returns every boat with either a generated icon (topdown_uri) or an
+// in-flight / failed regeneration (topdown_status). The map client polls
+// this endpoint globally and uses it as both the icon lookup table and
+// the live rendering-status feed for the boat detail screen.
 app.get("/boats/topdowns", async (req, res) => {
   try {
     const rows = await db.getAllTopdowns();
@@ -897,6 +951,9 @@ app.post("/boats/:mmsi/media", async (req, res) => {
     if (result) {
       res.send(result);
       res.status(200).end();
+
+      // Fire-and-forget topdown regen — same as the multipart path.
+      triggerAutoTopdown(req.params.mmsi, boat.boat_id);
       return;
     }
   }
