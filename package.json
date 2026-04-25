@@ -9,7 +9,7 @@
     "startbeta": "export PORT=3103 && node server.js",
     "dev": "node server.js",
     "migrate": "node scripts/migrate.mjs",
-    "tunnel": "cloud-sql-proxy naked-sailor:europe-west1:marinais-db-2 --port 5433"
+    "tunnel": "bash scripts/tunnel.sh"
   },
   "repository": {
     "type": "git",
