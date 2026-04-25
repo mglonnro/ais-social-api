@@ -22,12 +22,17 @@ const uploadToStorage = async (mmsi, fname, bname, contentType) => {
 
 // Uploads an in-memory buffer to an exact destination path inside the bucket
 // (e.g. "images/topdown/123456789.png"). Returns the public HTTPS URL.
+// publicRead so the mobile app can <Image> the result directly — user
+// originals at images/<uuid> are private and only their auto-generated
+// thumbnails are public; we don't have a thumbnail extension watching
+// images/topdown/, and our PNG is already icon-sized.
 const uploadBufferToStorage = async (buffer, destination, contentType) => {
   const bucket = getBucket();
   const file = bucket.file(destination);
   await file.save(buffer, {
     contentType,
     resumable: false,
+    predefinedAcl: "publicRead",
     metadata: { cacheControl: "public, max-age=3600" },
   });
   return PUBLIC_BASE + destination;

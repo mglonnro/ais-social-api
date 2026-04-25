@@ -762,25 +762,16 @@ app.patch("/messages/read", async (req, res) => {
   }
 });
 
-// Bulk lookup of AI top-down icons for a set of visible MMSIs.
-// Returns only boats that have a generated icon. No auth required — the
-// underlying GCS URLs are already public and mirror what /boats/:boatId returns.
-app.get("/boats/topdown", async (req, res) => {
-  const raw = req.query.mmsis || "";
-  const mmsis = String(raw)
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!mmsis.length) {
-    res.status(400).json({ error: "mmsis query param is required" });
-    return;
-  }
+// Returns the full list of boats that have an AI top-down icon. The set is
+// small (manually generated), so the map client fetches it once and uses
+// the response as a local lookup table — no per-viewport round-trips.
+app.get("/boats/topdowns", async (req, res) => {
   try {
-    const rows = await db.getBoatsTopdown(mmsis);
+    const rows = await db.getAllTopdowns();
     res.append("Content-Type", "application/json");
     res.status(200).send(rows);
   } catch (e) {
-    console.error("boats/topdown error", e);
+    console.error("boats/topdowns error", e);
     res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });

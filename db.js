@@ -419,13 +419,13 @@ class DB {
     return { score: total.rows[0].score, addedScore: data.score };
   }
 
-  async getBoatsTopdown(mmsis) {
-    // Bulk lookup for the map layer: returns {mmsi, topdown_uri, length, beam}
-    // only for boats that actually have a generated icon.
-    if (!mmsis?.length) return [];
+  async getAllTopdowns() {
+    // Returns every boat that has a generated icon. The set is small
+    // (manually-generated; tens, eventually maybe hundreds), so the map
+    // client just fetches all of them once and uses the result as a
+    // local lookup table.
     const result = await this.client.query(
-      "SELECT mmsi, topdown_uri, topdown_length_m, topdown_beam_m FROM boats WHERE mmsi = ANY($1) AND topdown_uri IS NOT NULL",
-      [mmsis],
+      "SELECT mmsi, topdown_uri, topdown_length_m, topdown_beam_m FROM boats WHERE topdown_uri IS NOT NULL",
     );
     return result.rows;
   }
