@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.json.key
+*-service-account*.json
+keys/*-service-account*.json
+uploads/
+useruploads/
+ais.json
+*.log
+.DS_Store
