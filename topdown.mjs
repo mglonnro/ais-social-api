@@ -5,6 +5,7 @@ import { uploadBufferToStorage, downloadFromStorage } from "./fb.mjs";
 
 const MAX_REF_PHOTOS = 4;
 const ICON_LONG_EDGE_PX = 128;
+const TRIM_THRESHOLD = 40;   // out of 255 — tolerant of JPEG artifacts
 
 // Two URL formats appear in `media.uri`:
 // - storage.googleapis.com/<bucket>/<obj>  — raw GCS, private, needs auth
@@ -27,11 +28,43 @@ const fetchBuffer = async (uri) => {
   return Buffer.from(await r.arrayBuffer());
 };
 
+// Replaces the chroma-green (#00FF00) background Gemini paints with proper
+// alpha=0 so subsequent .trim()/.extend() steps work in alpha space and
+// the final PNG composes correctly over the map. Soft 60..120 ramp on the
+// "greenness" score keeps anti-aliased edges from leaving a hard halo.
+const chromaKeyGreen = async (pngBuffer) => {
+  const { data, info } = await sharp(pngBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const out = Buffer.from(data);
+  for (let i = 0; i < out.length; i += 4) {
+    const r = out[i];
+    const g = out[i + 1];
+    const b = out[i + 2];
+    const greenness = Math.max(0, Math.min(g - r, g - b));
+    let mult;
+    if (greenness >= 120) mult = 0;
+    else if (greenness <= 60) mult = 1;
+    else mult = (120 - greenness) / 60;
+    out[i + 3] = Math.round(out[i + 3] * mult);
+  }
+  return await sharp(out, {
+    raw: { width: info.width, height: info.height, channels: 4 },
+  })
+    .png()
+    .toBuffer();
+};
+
 // Crops the Gemini output so width:height matches the boat's real beam:length,
 // then resizes so the longest edge is ICON_LONG_EDGE_PX.
 const finalizeIcon = async (rawPng, lengthM, beamM) => {
-  // 1. Trim alpha padding around whatever Gemini drew (boat centered).
-  const trimmed = await sharp(rawPng).trim({ threshold: 10 }).toBuffer();
+  // 0. Chroma-key the green Gemini paints to alpha=0.
+  const keyed = await chromaKeyGreen(rawPng);
+
+  // 1. Trim transparent padding around the boat. Threshold tolerates the
+  //    soft-edge ramp from chromaKeyGreen.
+  const trimmed = await sharp(keyed).trim({ threshold: TRIM_THRESHOLD }).toBuffer();
   const meta = await sharp(trimmed).metadata();
   const w = meta.width;
   const h = meta.height;

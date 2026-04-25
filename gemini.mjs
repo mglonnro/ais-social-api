@@ -8,14 +8,17 @@ const ai = new GoogleGenAI({});
 
 const buildPrompt = (lengthM, beamM) => {
   const ratio = (lengthM / beamM).toFixed(2);
+  // V2: chroma-green background instead of "transparent" (which Gemini
+  // routinely ignores) — we key the green to alpha in topdown.mjs.
+  // Tight-framing language to keep the boat from rendering as a tiny
+  // sliver in the middle of the canvas.
   return (
-    `Based on the reference photo(s), render a clean top-down (bird's-eye) aerial view of this exact vessel. ` +
-    `Flat overhead angle, entire hull visible, bow pointing up. ` +
-    `The boat is ${lengthM} metres long and ${beamM} metres wide — the rendered proportions must exactly match ` +
-    `this length-to-beam ratio of ${ratio}:1. ` +
-    `Match hull color, deck layout, superstructure, and overall proportions from the reference(s) as faithfully as possible. ` +
-    `Transparent background. Clean illustration suitable for a small map icon. ` +
-    `No shadows, no water, no people, no text.`
+    `Render a clean top-down aerial view of the exact vessel in the reference photo(s). ` +
+    `Bow points straight up. ` +
+    `The full hull from bow tip to stern must fill the entire image edge-to-edge with no margins or padding — crop tightly. ` +
+    `Hull color, deck layout, and superstructure must match the reference(s). ` +
+    `Boat dimensions: ${lengthM}m long × ${beamM}m wide (length-to-beam ratio ${ratio}:1). ` +
+    `Solid pure chroma-key green background (#00FF00) outside the hull, no shadows, no water, no people, no text, no frame, no border.`
   );
 };
 
@@ -56,7 +59,10 @@ export const generateTopdown = async (photoBuffers, lengthM, beamM) => {
     contents: parts,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio: "1:1", imageSize: "512" },
+      // 9:16 (taller than wide) better matches typical bow-up boat
+      // proportions than 1:1 — the model uses the full height of the
+      // canvas instead of a thin centered sliver.
+      imageConfig: { aspectRatio: "9:16", imageSize: "512" },
     },
   });
 
