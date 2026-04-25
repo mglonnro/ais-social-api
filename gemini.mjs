@@ -12,15 +12,18 @@ const buildPrompt = (lengthM, beamM) => {
   // result to the exact aspect afterwards if Gemini misjudges, so prose
   // accuracy matters less than getting a clean top-down hull.
   return (
-    `Top-down aerial illustration of the vessel from the reference photo(s). ` +
+    `Photorealistic overhead photograph of the vessel from the reference photo(s), as if captured by a drone hovering directly above. ` +
+    `Render with the visual quality of a real high-resolution aerial photo: actual materials (paint, fiberglass, varnished wood, metal, fabric, glass) with accurate textures and realistic lighting. ` +
+    `DO NOT produce an illustration, line drawing, technical sketch, schematic, blueprint, cartoon, cel-shaded image, or any stylized art. The output must look like a photo, not artwork. ` +
     `Bow points to the top of the canvas. ` +
     `The vessel is exactly ${lengthM} metres long (bow to stern) and ${beamM} metres wide (port to starboard). ` +
     `Render the boat with this EXACT length-to-beam ratio of ${ratio}:1 — do not distort, stretch, or alter the proportions to fit the canvas. ` +
     `Match hull color, deck layout, mast(s), and superstructure from the reference(s) as faithfully as possible. ` +
     `Place the boat so it fills the full canvas HEIGHT (bow at top edge, stern at bottom edge), centered horizontally. ` +
     `The boat's actual width will occupy whatever fraction of canvas width its real beam-to-length ratio dictates — that is correct. ` +
-    `Fill the rest of the canvas with pure chroma-key green (#00FF00). ` +
-    `No shadows, no water, no people, no text, no frame, no border.`
+    `Fill the rest of the canvas with pure flat chroma-key green (#00FF00). ` +
+    `Self-shadows on the deck and superstructure are fine and expected for realism, but the boat must NOT cast a shadow onto the green background. ` +
+    `No water, no people, no text, no frame, no border.`
   );
 };
 

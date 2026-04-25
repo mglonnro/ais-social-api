@@ -123,7 +123,10 @@ export const generateBoatTopdown = async (db, mmsi, { photoIds, debugDir } = {})
   const rawPng = await generateTopdown(buffers, lengthM, beamM);
   const finalized = await finalizeIcon(rawPng, lengthM, beamM, debugDir);
 
-  const destination = `images/topdown/${mmsi}.png`;
+  // Timestamp the path so each regeneration produces a unique URL —
+  // Google's edge cache is keyed on path, so re-uploading to the same
+  // name would serve the stale bytes for the cacheControl TTL.
+  const destination = `images/topdown/${mmsi}-${Date.now()}.png`;
   const uri = await uploadBufferToStorage(finalized, destination, "image/png");
 
   await db.updateBoatTopdown(mmsi, uri, lengthM, beamM);
