@@ -14,6 +14,7 @@ SQL_PORT="${SQL_PORT:-5433}"
 VM_NAME="marinais-vm1"
 VM_ZONE="europe-west1-b"
 AIS_PORT="${AIS_PORT:-3105}"
+MSG_PORT="${MSG_PORT:-3110}"
 
 command -v cloud-sql-proxy >/dev/null \
   || { echo "cloud-sql-proxy not found. brew install cloud-sql-proxy"; exit 1; }
@@ -26,10 +27,11 @@ trap cleanup EXIT INT TERM
 echo "→ Cloud SQL Auth Proxy on 127.0.0.1:${SQL_PORT}"
 cloud-sql-proxy "${SQL_INSTANCE}" --port "${SQL_PORT}" &
 
-echo "→ gcloud SSH tunnel ${VM_NAME} :${AIS_PORT}"
+echo "→ gcloud SSH tunnel ${VM_NAME} :${AIS_PORT} (ais-server) :${MSG_PORT} (msg-server)"
 gcloud compute ssh "${VM_NAME}" \
   --zone "${VM_ZONE}" \
   --project "${PROJECT}" \
-  -- -L "${AIS_PORT}:127.0.0.1:${AIS_PORT}" -N &
+  -- -L "${AIS_PORT}:127.0.0.1:${AIS_PORT}" \
+     -L "${MSG_PORT}:127.0.0.1:${MSG_PORT}" -N &
 
 wait

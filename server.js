@@ -121,7 +121,7 @@ let bws_starting = false;
 setInterval(() => {
   if (!server_ws) {
     console.log("[SERVERWS] opening new");
-    server_ws = new WebSocket("ws://localhost:3110");
+    server_ws = new WebSocket(process.env.MSG_SERVER_URL || "ws://localhost:3110");
 
     server_ws.on("error", (event) => {
       console.error("[SERVERWS] error", event);
