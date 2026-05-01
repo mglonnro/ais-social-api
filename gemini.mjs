@@ -6,13 +6,15 @@ const MODEL = "gemini-3.1-flash-image-preview";
 // GoogleGenAI reads GEMINI_API_KEY from env automatically.
 const ai = new GoogleGenAI({});
 
-const buildPrompt = (lengthM, beamM) => {
+const buildPrompt = (lengthM, beamM, shipName) => {
   const ratio = (lengthM / beamM).toFixed(2);
+  const namePart = shipName ? `The vessel is named "${shipName}". ` : "";
   // We tell Gemini the boat's real proportions; topdown.mjs stretches the
   // result to the exact aspect afterwards if Gemini misjudges, so prose
   // accuracy matters less than getting a clean top-down hull.
   return (
     `Photorealistic overhead photograph of the vessel from the reference photo(s), as if captured by a drone hovering directly above. ` +
+    namePart +
     `Render with the visual quality of a real high-resolution aerial photo: actual materials (paint, fiberglass, varnished wood, metal, fabric, glass) with accurate textures and realistic lighting. ` +
     `DO NOT produce an illustration, line drawing, technical sketch, schematic, blueprint, cartoon, cel-shaded image, or any stylized art. The output must look like a photo, not artwork. ` +
     `Bow points to the top of the canvas. ` +
@@ -41,7 +43,7 @@ const sniffMimeType = (buf) => {
   throw new Error("Unrecognized image format in reference photo");
 };
 
-export const generateTopdown = async (photoBuffers, lengthM, beamM) => {
+export const generateTopdown = async (photoBuffers, lengthM, beamM, shipName) => {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY is not set");
   }
@@ -49,7 +51,7 @@ export const generateTopdown = async (photoBuffers, lengthM, beamM) => {
     throw new Error("At least one reference photo is required");
   }
 
-  const prompt = buildPrompt(lengthM, beamM);
+  const prompt = buildPrompt(lengthM, beamM, shipName);
   console.log("[gemini] prompt:\n" + prompt);
   const parts = [
     { text: prompt },
