@@ -120,7 +120,8 @@ export const generateBoatTopdown = async (db, mmsi, { photoIds, debugDir } = {})
 
   const buffers = await Promise.all(chosen.map((m) => fetchBuffer(m.uri)));
 
-  const rawPng = await generateTopdown(buffers, lengthM, beamM);
+  const shipName = ais?.ShipName || boat?.name || null;
+  const rawPng = await generateTopdown(buffers, lengthM, beamM, shipName);
   const finalized = await finalizeIcon(rawPng, lengthM, beamM, debugDir);
 
   // Timestamp the path so each regeneration produces a unique URL —
