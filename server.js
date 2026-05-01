@@ -304,14 +304,26 @@ app.post("/auth", async (req, res) => {
       if (authType === PROVIDER_APPLE) {
         providerUserId = getIdFromToken(data.identityToken);
         console.log("Found valid appleUserId", providerUserId);
-        dbUser = await db.getUserByAppleId(providerUserId);
       } else if (authType === PROVIDER_GOOGLE) {
         providerUserId = await googleGetIdFromToken(data.idToken);
         console.log("Found valid googleUserId", providerUserId);
-        dbUser = await db.getUserByGoogleId(providerUserId);
       } else {
         res.status(401).end();
         return;
+      }
+
+      /* Token verification failed (missing, malformed, or audience mismatch).
+         Without this guard, a null providerUserId would fall through to
+         createUser({ googleId: null }) and mint a bogus account. */
+      if (!providerUserId) {
+        res.status(401).end();
+        return;
+      }
+
+      if (authType === PROVIDER_APPLE) {
+        dbUser = await db.getUserByAppleId(providerUserId);
+      } else {
+        dbUser = await db.getUserByGoogleId(providerUserId);
       }
 
       res.append("Content-Type", "application/json");

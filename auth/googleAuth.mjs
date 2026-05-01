@@ -1,44 +1,46 @@
 import { OAuth2Client } from "google-auth-library";
 
-// const GOOGLE_ID = "1020724884438-kff8jh16c8rvsvgo8nkpovn61pn1b7jm.apps.googleusercontent.com";
-const GOOGLE_ID = "1020724884438-581773gdjm6l7785l0huedh8b50l75ce.apps.googleusercontent.com";
+/* All three OAuth clients for this project. The mobile SDK mints an
+   idToken whose `aud` is the web client when `webClientId` is set in
+   GoogleSignin.configure (current setup), or the platform-native client
+   when it isn't. Accepting all three keeps verification resilient to
+   either configuration and to per-platform sign-in flows. */
+const GOOGLE_WEB_CLIENT_ID = "1020724884438-gtirh499v52s4qlnuik6entvsu98j4rm.apps.googleusercontent.com";
+const GOOGLE_IOS_CLIENT_ID = "1020724884438-581773gdjm6l7785l0huedh8b50l75ce.apps.googleusercontent.com";
+const GOOGLE_ANDROID_CLIENT_ID = "1020724884438-kff8jh16c8rvsvgo8nkpovn61pn1b7jm.apps.googleusercontent.com";
 
-  async function googleVerifyToken(idToken) {
-    try {
+const GOOGLE_AUDIENCES = [
+  GOOGLE_WEB_CLIENT_ID,
+  GOOGLE_IOS_CLIENT_ID,
+  GOOGLE_ANDROID_CLIENT_ID,
+];
+
+async function googleVerifyToken(idToken) {
+  try {
     const oAuth2Client = new OAuth2Client();
-
-      console.log("idToken", idToken);
 
     const result = await oAuth2Client.verifyIdToken({
       idToken: idToken,
-      audience: GOOGLE_ID,
+      audience: GOOGLE_AUDIENCES,
     });
 
-    // Verify that the token contains subject and email claims.
-    // Get the User id.
     if (result.payload['sub']) {
       return result.payload;
     }
-
-    // Optionally, if "includeEmail" was set in the token options, check if the
-    // email was verified
-    /* 
-    if (result.payload['email_verified']) {
-      console.log(`Email verified: ${result.payload['email_verified']}`);
-    }
-    */
-    } catch (e) {
-      console.error(e);
-      return null;
-    }
-
+  } catch (e) {
+    console.error(e);
     return null;
   }
 
-/* Expects token string from Apple authentication */
+  return null;
+}
+
+/* Returns the Google `sub` claim, or null if the token is missing or fails
+   verification. Callers must handle null (e.g. respond 401). */
 const googleGetIdFromToken = async (token) => {
-    const decoded = await googleVerifyToken(token);
-    return decoded.sub;
+  if (!token) return null;
+  const decoded = await googleVerifyToken(token);
+  return decoded ? decoded.sub : null;
 };
 
 export {
