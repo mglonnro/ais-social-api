@@ -54,4 +54,22 @@ const createUser = async (base) => {
   return user;
 };
 
-export { createUser, getUniqueNickName };
+/* Look up an existing user by deviceId or create a fresh anonymous one.
+   The returned user is indistinguishable from any other — same shape, same
+   downstream code paths (scores, media, getUserSpotted). */
+const getOrCreateAnonymousUser = async (deviceId) => {
+  const db = new DB();
+  await db.connect();
+  try {
+    let user = await db.getUserByDeviceId(deviceId);
+    if (!user) {
+      let nickName = await getUniqueNickName();
+      user = await db.createUser({ username: nickName, deviceId });
+    }
+    return user;
+  } finally {
+    await db.close();
+  }
+};
+
+export { createUser, getUniqueNickName, getOrCreateAnonymousUser };

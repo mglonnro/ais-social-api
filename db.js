@@ -502,6 +502,79 @@ class DB {
     }
   }
 
+  async getUserByDeviceId(deviceId) {
+    const result = await this.client.query(
+      "SELECT user_id, username, google_id, apple_id, device_id FROM users WHERE device_id = $1",
+      [deviceId],
+    );
+
+    if (!result.rows.length) {
+      return null;
+    } else {
+      return result.rows[0];
+    }
+  }
+
+  async linkDeviceIdToUser(userId, deviceId) {
+    const result = await this.client.query(
+      "UPDATE users SET device_id = $2 WHERE user_id = $1 RETURNING *",
+      [userId, deviceId],
+    );
+    return result.rows[0] || null;
+  }
+
+  /* Reassign all of an anonymous user's data to a real account, delete the
+     anonymous row, and link the deviceId to the real account — atomically.
+     Wrapped in a transaction so a mid-flight failure can't leave orphan
+     rows or a deviceId pointing at a deleted user. */
+  async mergeAnonymousIntoUser(anonUserId, realUserId, deviceId) {
+    if (anonUserId === realUserId) return;
+    try {
+      await this.client.query("BEGIN");
+      await this.client.query(
+        "UPDATE scores SET user_id = $1 WHERE user_id = $2",
+        [realUserId, anonUserId],
+      );
+      await this.client.query(
+        "UPDATE media SET user_id = $1 WHERE user_id = $2",
+        [realUserId, anonUserId],
+      );
+      /* Defensive: anonymous users shouldn't have claims or messages
+         (those flows still require real OAuth), but reassign them anyway
+         so a future change to the auth surface doesn't silently strand
+         data. */
+      await this.client.query(
+        "UPDATE claims SET user_id = $1 WHERE user_id = $2",
+        [realUserId, anonUserId],
+      );
+      await this.client.query(
+        "UPDATE messages SET fromuserid = $1 WHERE fromuserid = $2",
+        [realUserId, anonUserId],
+      );
+      await this.client.query(
+        "UPDATE messages SET touserid = $1 WHERE touserid = $2",
+        [realUserId, anonUserId],
+      );
+      await this.client.query(
+        "UPDATE messages SET userid = $1 WHERE userid = $2",
+        [realUserId, anonUserId],
+      );
+      await this.client.query("DELETE FROM users WHERE user_id = $1", [
+        anonUserId,
+      ]);
+      if (deviceId) {
+        await this.client.query(
+          "UPDATE users SET device_id = $2 WHERE user_id = $1",
+          [realUserId, deviceId],
+        );
+      }
+      await this.client.query("COMMIT");
+    } catch (e) {
+      await this.client.query("ROLLBACK");
+      throw e;
+    }
+  }
+
   async isNickAvailable(nick) {
     const result = await this.client.query(
       "SELECT user_id FROM users WHERE lower(username) = lower($1)",
@@ -525,8 +598,14 @@ class DB {
 
   async createUser(user) {
     const result = await this.client.query(
-      "INSERT INTO users (username, email, created_time, apple_id, google_id) VALUES ($1, $2, NOW(), $3, $4) RETURNING *",
-      [user.username, user.email, user.appleId, user.googleId],
+      "INSERT INTO users (username, email, created_time, apple_id, google_id, device_id) VALUES ($1, $2, NOW(), $3, $4, $5) RETURNING *",
+      [
+        user.username,
+        user.email ?? null,
+        user.appleId ?? null,
+        user.googleId ?? null,
+        user.deviceId ?? null,
+      ],
     );
 
     if (result.rows.length) {

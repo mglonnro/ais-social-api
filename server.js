@@ -14,7 +14,7 @@ import multer from "multer";
 import GeoJSON from "geojson";
 import { getIdFromToken } from "./auth/appleAuth.mjs";
 import { googleGetIdFromToken } from "./auth/googleAuth.mjs";
-import { createUser, getUniqueNickName } from "./users.js";
+import { createUser, getUniqueNickName, getOrCreateAnonymousUser } from "./users.js";
 import {
   hasToken,
   getUserIdFromHeaders,
@@ -292,8 +292,8 @@ const PROVIDER_APPLE = "apple",
 
 app.post("/auth", async (req, res) => {
   try {
-    const { authType, data } = req.body;
-    console.log("authType", authType, "data", data);
+    const { authType, data, deviceId } = req.body;
+    console.log("authType", authType, "data", data, "deviceId", deviceId);
 
     let userId;
 
@@ -328,14 +328,31 @@ app.post("/auth", async (req, res) => {
 
       res.append("Content-Type", "application/json");
 
+      /* Upgrade path: client sent a deviceId from a prior anonymous session.
+         If that deviceId already belongs to an anonymous user (no
+         apple_id/google_id), claim that row instead of creating a new one
+         so the user keeps their spots, media, and score. */
+      if (!dbUser && deviceId) {
+        const anonUser = await db.getUserByDeviceId(deviceId);
+        if (anonUser && !anonUser.apple_id && !anonUser.google_id) {
+          const field = authType === PROVIDER_APPLE ? "apple_id" : "google_id";
+          const upgraded = await db.client.query(
+            `UPDATE users SET ${field} = $1 WHERE user_id = $2 RETURNING *`,
+            [providerUserId, anonUser.user_id],
+          );
+          dbUser = upgraded.rows[0];
+          console.log("Upgraded anonymous user", dbUser.user_id, "via", field);
+        }
+      }
+
       /* We didn't find any, so let's create a new */
       if (!dbUser) {
         var newUser;
 
         if (authType === PROVIDER_APPLE) {
-          newUser = await createUser({ appleId: providerUserId });
+          newUser = await createUser({ appleId: providerUserId, deviceId });
         } else {
-          newUser = await createUser({ googleId: providerUserId });
+          newUser = await createUser({ googleId: providerUserId, deviceId });
         }
 
         console.log("newUser", newUser);
@@ -349,6 +366,40 @@ app.post("/auth", async (req, res) => {
           }),
         );
       } else {
+        /* Returning user signing in. If the client passed a deviceId, we
+           need to make sure it ends up on this user. Three sub-cases:
+             a) deviceId already matches what's on file → no-op
+             b) deviceId is sitting on a different anonymous user → migrate
+                that user's spots/media here, delete the anon row to free
+                the deviceId, then link it
+             c) deviceId is unset on this user and not on anyone else → link
+           A deviceId that's already linked to a different *real* account
+           (apple_id/google_id set) is left alone — that's a different
+           install of a different person, don't touch it. */
+        if (deviceId && dbUser.device_id !== deviceId) {
+          const otherUser = await db.getUserByDeviceId(deviceId);
+          if (otherUser && otherUser.user_id !== dbUser.user_id) {
+            if (!otherUser.apple_id && !otherUser.google_id) {
+              console.log(
+                "Merging anonymous user",
+                otherUser.user_id,
+                "into",
+                dbUser.user_id,
+              );
+              /* Atomic: reassigns scores/media/claims/messages, deletes
+                 the anon row, and links deviceId in one transaction. */
+              await db.mergeAnonymousIntoUser(
+                otherUser.user_id,
+                dbUser.user_id,
+                deviceId,
+              );
+              dbUser.device_id = deviceId;
+            }
+          } else if (!otherUser) {
+            await db.linkDeviceIdToUser(dbUser.user_id, deviceId);
+            dbUser.device_id = deviceId;
+          }
+        }
         const score = await db.getUserScore(dbUser.user_id);
         const token = makeToken({ user_id: dbUser.user_id });
         res.send(Object.assign({}, dbUser, { score: score, token: token }));
@@ -363,6 +414,31 @@ app.post("/auth", async (req, res) => {
   }
 
   res.status(401).end();
+});
+
+/* Anonymous "sign-in" — exchange a per-install deviceId for a real user_id
+   and a JWT. The user looks like any other; sign-in via /auth with the
+   same deviceId in the body upgrades this row to a real account rather
+   than creating a duplicate. */
+app.post("/users/anonymous", async (req, res) => {
+  try {
+    const { deviceId } = req.body;
+    if (!deviceId || typeof deviceId !== "string" || deviceId.length < 8) {
+      res.status(400).send({ error: "deviceId required" });
+      return;
+    }
+
+    const user = await getOrCreateAnonymousUser(deviceId);
+    const score = await db.getUserScore(user.user_id);
+    const token = makeToken({ user_id: user.user_id });
+
+    res.append("Content-Type", "application/json");
+    res.send(Object.assign({}, user, { score: score || 0, token }));
+    res.status(200).end();
+  } catch (e) {
+    console.error(e);
+    res.status(500).end();
+  }
 });
 
 app.delete("/users/:userId", async (req, res) => {
