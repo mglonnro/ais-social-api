@@ -1,5 +1,5 @@
 import jwt from "jsonwebtoken";
-import jwkToPem from "jwk-to-pem";
+import { createPublicKey } from "crypto";
 import appleKeys from "../keys/appleKeys.js";
 
 /* Sign in with Apple identity tokens for our iOS app carry the bundle id
@@ -20,7 +20,7 @@ const verifyToken = (token) => {
 
   for (let x = 0; x < appleKeys.keys.length; x++) {
     if (appleKeys.keys[x].kid === kid) {
-      return jwt.verify(token, jwkToPem(appleKeys.keys[x]), {
+      return jwt.verify(token, createPublicKey({ key: appleKeys.keys[x], format: "jwk" }), {
         algorithms: ["RS256", "RS384", "RS512"],
         issuer: APPLE_ISSUER,
         audience: APPLE_AUDIENCE,

@@ -2,7 +2,6 @@ import pkg from "pg";
 const { Client } = pkg;
 
 import geolib from "geolib";
-import admin from "./firebase.js";
 
 /*
 import loadDB from "./firebase_db.js";
