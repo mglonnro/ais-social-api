@@ -126,6 +126,26 @@ class DB {
     return ret;
   }
 
+  /* REST variants of setReceived/setRead: only the recipient may mark a
+     message. (msg-server keeps using the unscoped versions.) */
+  async setReceivedForRecipient(msgid, time, userId) {
+    return await this.client.query(
+      "UPDATE messages SET received_at = $1, updated = CURRENT_TIMESTAMP WHERE msgid = $2 AND touserid = $3",
+      [time, msgid, userId],
+    );
+  }
+
+  async setReadForRecipient(msgid, time, userId) {
+    const res = await this.client.query(
+      "UPDATE messages SET read_at = $1, updated = CURRENT_TIMESTAMP WHERE msgid = $2 AND touserid = $3 AND read_at IS NULL RETURNING toboatid",
+      [time, msgid, userId],
+    );
+    if (res.rows.length && res.rows[0].toboatid) {
+      await this.updateUnreadCount(res.rows[0].toboatid);
+    }
+    return res;
+  }
+
   async setReceived(msgid, time) {
     return await this.client.query(
       "UPDATE messages SET received_at = $1, updated = CURRENT_TIMESTAMP WHERE msgid = $2",

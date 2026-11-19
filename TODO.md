@@ -13,3 +13,10 @@ Plan: `~/.claude/plans/ok-i-have-a-quirky-kay.md`
 - [ ] Expose `topdown_uri / topdown_length_m / topdown_beam_m` in `GET /boats/:mmsi`.
 - [ ] Set `GEMINI_API_KEY` in prod/beta env.
 - [ ] Verification: see plan file.
+
+## Security follow-ups
+- [ ] Lock down `POST /users/:userId/score`: require a token whose user_id matches `data.userId` and the path. Do it once app builds that send the token (ais-social branch `fix/score-auth-token`) have rolled out. Until then anyone can post any score for any user and rename boats via `boat.ShipName`.
+- [ ] Score values and positions are client-supplied; consider computing points server-side.
+- [ ] Dependency upgrades (`npm audit`: ~26 high/critical): remove unused `base64-img` and `multer` (and `fs` stub), `npm audit fix`, `firebase-admin` 9 → 14, `sharp` → 0.35.5, `ws` patch.
+- [ ] Apple sign-in uses hardcoded keys in `keys/appleKeys.js`; fetch Apple's JWKS at runtime (cached) instead of relying on `refreshKeys.sh`.
+- [ ] `cors()` allows every origin; restrict if there is no web client.
