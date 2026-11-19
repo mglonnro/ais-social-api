@@ -1,16 +1,10 @@
 import "dotenv/config";
 import DB from "./db.js";
 import fs from "fs";
-import Hasher from "./hasher.js";
 import bodyParser from "body-parser";
 import cors from "cors";
-import sanitize from "sanitize-filename";
-import { exec, spawn } from "child_process";
 import StateFile from "./statefile.js";
-import Auth from "./auth.js";
-import base64Img from "base64-img";
 import path from "path";
-import GeoJSON from "geojson";
 import { getIdFromToken } from "./auth/appleAuth.mjs";
 import { googleGetIdFromToken } from "./auth/googleAuth.mjs";
 import { createUser, getUniqueNickName, getOrCreateAnonymousUser } from "./users.js";
@@ -45,8 +39,6 @@ const server = http.createServer(app);
 
 const db = new DB();
 db.connect();
-
-const auth = new Auth(db);
 
 app.use(cors());
 app.use(

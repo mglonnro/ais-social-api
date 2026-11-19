@@ -17,6 +17,7 @@ Plan: `~/.claude/plans/ok-i-have-a-quirky-kay.md`
 ## Security follow-ups
 - [ ] Lock down `POST /users/:userId/score`: require a token whose user_id matches `data.userId` and the path. Do it once app builds that send the token (ais-social branch `fix/score-auth-token`) have rolled out. Until then anyone can post any score for any user and rename boats via `boat.ShipName`.
 - [ ] Score values and positions are client-supplied; consider computing points server-side.
-- [ ] Dependency upgrades (`npm audit`: ~26 high/critical): remove unused `base64-img` and `multer` (and `fs` stub), `npm audit fix`, `firebase-admin` 9 → 14, `sharp` → 0.35.5, `ws` patch.
+- [ ] `@google-cloud/storage` 7 → 9 clears the last 5 moderate advisories (uuid/gaxios/teeny-request chain), but 9 needs Node ≥ 22. Confirm the prod VM's Node version first; `sharp` 0.35.5 already needs ≥ 20.9.
+- [ ] Any rejected promise in an async route handler crashes the whole process (Express 4 doesn't catch them; there is no unhandledRejection handler). One DB error = API down until pm2 restarts it. Wrap handlers or move to Express 5.
 - [ ] Apple sign-in uses hardcoded keys in `keys/appleKeys.js`; fetch Apple's JWKS at runtime (cached) instead of relying on `refreshKeys.sh`.
 - [ ] `cors()` allows every origin; restrict if there is no web client.
