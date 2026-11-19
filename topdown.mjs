@@ -14,16 +14,32 @@ const TRIM_THRESHOLD = 40;   // out of 255 — tolerant of JPEG artifacts
 // - firebasestorage.googleapis.com/...?token=... — has a download token
 // The first 403s on plain fetch; route those through the Storage SDK so
 // our service-account creds are applied.
+// Anything else is refused: media URIs come from clients, and these
+// downloads run with the service account's credentials.
+const OWN_BUCKET = "ais-social.appspot.com";
+
 const fetchBuffer = async (uri) => {
   const u = new URL(uri);
+  if (u.protocol !== "https:") {
+    throw new Error(`Refusing non-https media URI: ${uri}`);
+  }
   if (u.hostname === "storage.googleapis.com") {
     const path = u.pathname.replace(/^\//, "");
     const slash = path.indexOf("/");
     const bucketName = path.slice(0, slash);
+    if (bucketName !== OWN_BUCKET) {
+      throw new Error(`Refusing media from foreign bucket: ${uri}`);
+    }
     const objectName = decodeURIComponent(path.slice(slash + 1));
     return await downloadFromStorage(bucketName, objectName);
   }
-  const r = await fetch(uri);
+  if (
+    u.hostname !== "firebasestorage.googleapis.com" ||
+    !u.pathname.startsWith(`/v0/b/${OWN_BUCKET}/o/`)
+  ) {
+    throw new Error(`Refusing media URI outside our bucket: ${uri}`);
+  }
+  const r = await fetch(uri, { redirect: "error" });
   if (!r.ok) {
     throw new Error(`Failed to fetch ${uri}: ${r.status} ${r.statusText}`);
   }

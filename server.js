@@ -10,7 +10,6 @@ import StateFile from "./statefile.js";
 import Auth from "./auth.js";
 import base64Img from "base64-img";
 import path from "path";
-import multer from "multer";
 import GeoJSON from "geojson";
 import { getIdFromToken } from "./auth/appleAuth.mjs";
 import { googleGetIdFromToken } from "./auth/googleAuth.mjs";
@@ -31,7 +30,6 @@ import { claimProcess, STATUS_RUNNING, STATUS_CLAIMED } from "./claim.js";
 import { getBoatAIS } from "./ais.js";
 
 const port = process.env.PORT;
-const upload = multer({ dest: "useruploads/" });
 
 const UPLOADS_DIR = "./uploads";
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -56,7 +54,7 @@ app.use(
     limit: "20mb",
     extended: true,
     verify: (req, res, buf, encoding) => {
-      console.log("bodyParser.urlencoded:", encoding, buf.toString());
+      console.log("bodyParser.urlencoded:", encoding);
     },
   }),
 );
@@ -290,10 +288,24 @@ setInterval(() => {
 const PROVIDER_APPLE = "apple",
   PROVIDER_GOOGLE = "google";
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/* Only our own bucket may be referenced as boat media: the topdown
+   generator downloads media URIs server-side with the service account. */
+const MEDIA_URI_PREFIXES = [
+  "https://storage.googleapis.com/ais-social.appspot.com/",
+  "https://firebasestorage.googleapis.com/v0/b/ais-social.appspot.com/o/",
+];
+const isOwnMediaUri = (uri) =>
+  typeof uri === "string" &&
+  MEDIA_URI_PREFIXES.some((p) => uri.startsWith(p)) &&
+  !uri.includes("..");
+
 app.post("/auth", async (req, res) => {
   try {
     const { authType, data, deviceId } = req.body;
-    console.log("authType", authType, "data", data, "deviceId", deviceId);
+    console.log("authType", authType);
 
     let userId;
 
@@ -422,9 +434,12 @@ app.post("/auth", async (req, res) => {
    than creating a duplicate. */
 app.post("/users/anonymous", async (req, res) => {
   try {
+    /* The deviceId acts as a bearer credential (it restores the linked
+       account after a reinstall), so only accept a random UUID — the
+       format the app generates with Crypto.randomUUID(). */
     const { deviceId } = req.body;
-    if (!deviceId || typeof deviceId !== "string" || deviceId.length < 8) {
-      res.status(400).send({ error: "deviceId required" });
+    if (typeof deviceId !== "string" || !UUID_RE.test(deviceId)) {
+      res.status(400).send({ error: "deviceId must be a UUID" });
       return;
     }
 
@@ -548,6 +563,12 @@ app.patch(
       }
       console.log("image type", type);
 
+      const boat = await db.getBoatByMMSI(req.params.mmsi);
+      if (!boat) {
+        res.status(404).json({ error: "boat_not_found" });
+        return;
+      }
+
       const _fname = uuidv4();
       fname = `${UPLOADS_DIR}/${_fname}`;
       fs.writeFileSync(fname, req.body);
@@ -559,14 +580,8 @@ app.patch(
         type.mime,
       );
 
-      const boat = await db.getBoatByMMSI(req.params.mmsi);
       const STORAGE_BASE =
         "https://storage.googleapis.com/ais-social.appspot.com/";
-
-      if (!boat) {
-        res.status(404).json({ error: "boat_not_found" });
-        return;
-      }
 
       const result = await db.postBoatMedia(
         userId,
@@ -596,12 +611,6 @@ app.patch(
     }
   },
 );
-
-app.patch("/multipart-upload", upload.single("photo"), (req, res) => {
-  console.log("multipart");
-  console.log(req.body);
-  res.end("OK");
-});
 
 // Admin-only: generate/refresh the AI top-down icon for a boat.
 // Gate: caller's user_id must appear in ADMIN_USER_IDS env (comma-separated).
@@ -666,7 +675,27 @@ app.put("/users/:userId/username", async (req, res) => {
 
 let claimStatus = {},
   claimCancel = {},
-  claimPosition = {};
+  claimPosition = {},
+  claimOwner = {}; // processId -> user_id that started it
+
+/* Responds and returns false unless the caller started this claim process. */
+const checkClaimOwner = (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  if (!userId) {
+    res.status(401).end();
+    return false;
+  }
+  const owner = claimOwner[req.params.processId];
+  if (owner === undefined) {
+    res.status(404).end();
+    return false;
+  }
+  if (owner !== userId) {
+    res.status(403).end();
+    return false;
+  }
+  return true;
+};
 
 app.get("/claims/:boatId/start", async (req, res) => {
   const userId = getUserIdFromHeaders(req.headers);
@@ -679,6 +708,7 @@ app.get("/claims/:boatId/start", async (req, res) => {
   } else {
     let uuid = uuidv4();
     claimStatus[uuid] = null;
+    claimOwner[uuid] = userId;
 
     console.log("Starting claim process for", req.params.boatId, userId, uuid);
 
@@ -717,23 +747,21 @@ app.get("/claims/:boatId/start", async (req, res) => {
 });
 
 app.put("/claims/process/:processId/location/:state", async (req, res) => {
-  const userId = getUserIdFromHeaders(req.headers);
+  if (!checkClaimOwner(req, res)) return;
   const processId = req.params.processId;
   const state = parseInt(req.params.state);
 
-  if (!userId) {
-    res.status(401).end();
-  } else {
-    claimPosition[processId] = state === 1;
-    console.log("claimPosition", processId, claimPosition[processId]);
-  }
+  claimPosition[processId] = state === 1;
+  console.log("claimPosition", processId, claimPosition[processId]);
+  res.status(200).end();
 });
 
 app.put("/users/:userId/pushtoken", async (req, res) => {
   const userId = getUserIdFromHeaders(req.headers);
 
-  if (!userId) {
+  if (!userId || userId !== parseInt(req.params.userId)) {
     res.status(401).end();
+    return;
   }
 
   const pushToken = req.body.pushToken;
@@ -762,21 +790,16 @@ app.delete("/claims/:claimId", async (req, res) => {
 });
 
 app.delete("/claims/process/:processId", async (req, res) => {
-  const userId = getUserIdFromHeaders(req.headers);
+  if (!checkClaimOwner(req, res)) return;
   const processId = req.params.processId;
 
-  if (!userId) {
-    res.status(401).end();
-    // we should also check for _correct_ userid */
-  } else {
-    claimCancel[processId] = true;
-    claimStatus[processId].status = "canceled";
-    res.status(200).end();
-  }
+  claimCancel[processId] = true;
+  claimStatus[processId] = { ...claimStatus[processId], status: "canceled" };
+  res.status(200).end();
 });
 
 app.get("/claims/process/:processId/status", async (req, res) => {
-  const userId = getUserIdFromHeaders(req.headers);
+  if (!checkClaimOwner(req, res)) return;
   const processId = req.params.processId;
 
   if (claimStatus[processId]) {
@@ -878,7 +901,11 @@ app.patch("/messages/received", async (req, res) => {
 
   if (userId) {
     for (const msg of req.body) {
-      await db.setReceived(msg.id, new Date(msg.received_at));
+      await db.setReceivedForRecipient(
+        msg.id,
+        new Date(msg.received_at),
+        userId,
+      );
     }
 
     res.send(req.body);
@@ -893,7 +920,7 @@ app.patch("/messages/read", async (req, res) => {
 
   if (userId) {
     for (const msg of req.body) {
-      await db.setRead(msg.id, new Date(msg.read_at));
+      await db.setReadForRecipient(msg.id, new Date(msg.read_at), userId);
     }
 
     res.send(req.body);
@@ -974,8 +1001,18 @@ app.get("/boats/:boatId", async (req, res) => {
 });
 
 app.put("/boats/:boatId", async (req, res) => {
+  const userId = getUserIdFromHeaders(req.headers);
+  if (!userId) {
+    res.status(401).end();
+    return;
+  }
+
   let data = req.body;
   console.log("data", data);
+  if (String(data.MMSI) !== req.params.boatId) {
+    res.status(400).json({ error: "mmsi_mismatch" });
+    return;
+  }
   const result = await db.putBoat(data);
 
   res.append("Content-Type", "application/json");
@@ -1031,6 +1068,11 @@ app.post("/boats/:mmsi/media", async (req, res) => {
   let data = req.body;
   console.log("data", data);
 
+  if (!isOwnMediaUri(data.uri)) {
+    res.status(400).json({ error: "invalid_media_uri" });
+    return;
+  }
+
   res.append("Content-Type", "application/json");
 
   const boat = await db.getBoatByMMSI(req.params.mmsi);
@@ -1073,8 +1115,10 @@ app.get("/users/:userId", async (req, res) => {
   const result = await db.getUser(req.params.userId);
   const score = await db.getUserScore(req.params.userId);
 
+  /* Public profile only. The full row holds device_id (a login
+     credential via /users/anonymous), provider ids and the push token. */
   if (result) {
-    res.send(Object.assign({}, result, { score: score }));
+    res.send({ user_id: result.user_id, username: result.username, score });
     res.status(200).end();
   } else {
     res.status(404).end();
@@ -1082,7 +1126,8 @@ app.get("/users/:userId", async (req, res) => {
 });
 
 app.post("/users/:userId/score", async (req, res) => {
-  // auth here
+  // TODO(security): require a token matching data.userId once app builds
+  // that send it (ais-social postScore) have rolled out. See TODO.md.
   let data = req.body;
 
   res.append("Content-Type", "application/json");
